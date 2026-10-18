@@ -8,11 +8,18 @@ from app.market.cache import PriceCache
 from app.market.tapetide_client import TapetideDataSource
 
 
-def _quote(requested: str, price: float, updated_at: str, found: bool = True) -> dict:
+def _quote(
+    requested: str,
+    price: float,
+    updated_at: str,
+    found: bool = True,
+    prev_close: float | None = None,
+) -> dict:
     return {
         "requested": requested,
         "symbol": requested,
         "price": price if found else None,
+        "prev_close": prev_close if found else None,
         "updated_at": updated_at if found else None,
         "found": found,
     }
@@ -71,6 +78,18 @@ class TestTapetideDataSource:
 
         assert cache.get_price("TATAMOTORS") == 421.05
         assert cache.get_price("TMCV") is None
+
+    async def test_prev_close_passed_through_as_day_baseline(self):
+        cache = PriceCache()
+        source = TapetideDataSource(api_key="test-key", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["RELIANCE"]
+        source._client = _mock_client(
+            [_quote("RELIANCE", 1211.20, "2026-10-16T10:29:44+00:00", prev_close=1215.00)]
+        )
+
+        await source._poll_once()
+
+        assert cache.get("RELIANCE").previous_close == 1215.00
 
     async def test_malformed_quote_skipped(self):
         cache = PriceCache()

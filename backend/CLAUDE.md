@@ -12,24 +12,26 @@ uv sync --extra dev   # Install all dependencies including test/lint tools
 The market data subsystem lives in `app/market/`. Use these imports:
 
 ```python
-from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_data_source
+from app.market import PriceCache, PriceUpdate, MarketDataSource, MarketDataManager
 ```
 
 ### Core Types
 
-- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, plus properties `change`, `change_percent`, `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization.
+- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `previous_close`, `timestamp`, plus properties `change`/`change_percent` (tick-over-tick, drives the flash), `day_change`/`day_change_percent` (session/day baseline, drives the watchlist's daily change %), `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization.
 
 - **`PriceCache`** — Thread-safe in-memory store. Key methods:
-  - `update(ticker, price, timestamp=None) -> PriceUpdate`
+  - `update(ticker, price, timestamp=None, previous_close=None) -> PriceUpdate`
   - `get(ticker) -> PriceUpdate | None`
   - `get_price(ticker) -> float | None`
   - `get_all() -> dict[str, PriceUpdate]`
   - `remove(ticker)`
   - `version` property — monotonic counter, increments on every update (for SSE change detection)
 
-- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `TapetideDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`. Also exposes `validate_ticker(ticker) -> bool`.
+- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource`, `TapetideDataSource`, and `MarketDataManager`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`. Also exposes `validate_ticker(ticker) -> bool`.
 
-- **`create_market_data_source(cache)`** — Factory. Returns `TapetideDataSource` if `TAPETIDE_API_KEY` is set AND it is currently NSE trading hours (9:15am-3:30pm IST, Mon-Fri; see `nse_hours.is_nse_trading_hours`), otherwise `SimulatorDataSource`.
+- **`MarketDataManager(price_cache, check_interval=60.0)`** — **Use this, not `create_market_data_source`, for anything long-running (i.e. `app/main.py`).** Owns the active source and re-checks every `check_interval` seconds whether the desired source (Tapetide vs simulator, per `TAPETIDE_API_KEY` + NSE trading hours) has changed; if so, it starts the new source with the same ticker list, stops the old one, and swaps — the shared `PriceCache` is never replaced, so this is transparent to SSE clients. Also exposes `active_source_name` (e.g. for a health-check field).
+
+- **`create_market_data_source(cache)`** — Factory returning a single, unstarted source for the *current* moment (Tapetide if `TAPETIDE_API_KEY` is set AND it is currently NSE trading hours — see `nse_hours.is_nse_trading_hours` — otherwise the simulator). Used internally by `MarketDataManager` and directly in tests; application code should go through the manager so handovers happen automatically.
 
 ### SSE Streaming
 

@@ -136,7 +136,12 @@ class TapetideDataSource(MarketDataSource):
                 try:
                     price = quote["price"]
                     timestamp = datetime.fromisoformat(quote["updated_at"]).timestamp()
-                    self._cache.update(ticker=ticker, price=price, timestamp=timestamp)
+                    self._cache.update(
+                        ticker=ticker,
+                        price=price,
+                        timestamp=timestamp,
+                        previous_close=quote.get("prev_close"),
+                    )
                 except (KeyError, TypeError, ValueError) as e:
                     logger.warning("Skipping malformed quote for %s: %s", ticker, e)
 

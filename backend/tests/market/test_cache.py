@@ -101,3 +101,24 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+    def test_first_update_defaults_previous_close_to_price(self):
+        """Test that the first update's day baseline is the price itself."""
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.50)
+        assert update.previous_close == 190.50
+        assert update.day_change == 0.0
+
+    def test_previous_close_carries_forward(self):
+        """Test that previous_close is preserved across updates that don't set it."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.00, previous_close=185.00)
+        update = cache.update("AAPL", 191.00)  # No previous_close given
+        assert update.previous_close == 185.00
+
+    def test_previous_close_explicit_override(self):
+        """Test that an explicit previous_close replaces the carried-forward value."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.00, previous_close=185.00)
+        update = cache.update("AAPL", 191.00, previous_close=188.00)
+        assert update.previous_close == 188.00

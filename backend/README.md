@@ -23,7 +23,7 @@ FastAPI backend for the FinAlly AI Trading Workstation.
 
 ```bash
 # Install dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run all tests
 uv run pytest
@@ -46,7 +46,7 @@ uv run pytest -v
 
 ```bash
 # Install dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run linter
 uv run ruff check .
