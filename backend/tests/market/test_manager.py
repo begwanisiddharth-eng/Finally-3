@@ -23,7 +23,27 @@ class TestMarketDataManager:
             await manager.start(["RELIANCE"])
 
         assert isinstance(manager._active, SimulatorDataSource)
-        assert manager.active_source_name == "SimulatorDataSource"
+        assert manager.active_source_name == "simulator"
+        await manager.stop()
+
+    async def test_active_source_name_uses_stable_labels(self):
+        """active_source_name returns the plan's literals, not class names.
+
+        The LLM portfolio context and /api/health both compare against
+        'tapetide'/'simulator', so the mapping is a contract.
+        """
+        cache = PriceCache()
+        manager = MarketDataManager(cache, check_interval=100.0)
+        assert manager.active_source_name == "none"
+
+        with patch.dict(os.environ, {}, clear=True):
+            await manager.start(["RELIANCE"])
+        assert manager.active_source_name == "simulator"
+
+        with patch.dict(os.environ, {"TAPETIDE_API_KEY": "test-key"}, clear=True):
+            with patch("app.market.factory.is_nse_trading_hours", return_value=True):
+                await manager._maybe_handover()
+        assert manager.active_source_name == "tapetide"
         await manager.stop()
 
     async def test_stop_is_idempotent(self):

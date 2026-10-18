@@ -3,6 +3,8 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from app.market.cache import PriceCache
 from app.market.factory import create_market_data_source
 from app.market.simulator import SimulatorDataSource
@@ -90,3 +92,33 @@ class TestFactory:
 
         assert isinstance(source, TapetideDataSource)
         assert source._cache is cache
+
+    def test_override_forces_simulator_during_trading_hours(self):
+        """MARKET_DATA_SOURCE=simulator wins even with a key during trading hours."""
+        cache = PriceCache()
+
+        env = {"TAPETIDE_API_KEY": "test-key", "MARKET_DATA_SOURCE": "simulator"}
+        with patch.dict(os.environ, env, clear=True):
+            with patch("app.market.factory.is_nse_trading_hours", return_value=True):
+                source = create_market_data_source(cache)
+
+        assert isinstance(source, SimulatorDataSource)
+
+    def test_override_forces_tapetide_outside_trading_hours(self):
+        """MARKET_DATA_SOURCE=tapetide wins even outside trading hours (key present)."""
+        cache = PriceCache()
+
+        env = {"TAPETIDE_API_KEY": "test-key", "MARKET_DATA_SOURCE": "tapetide"}
+        with patch.dict(os.environ, env, clear=True):
+            with patch("app.market.factory.is_nse_trading_hours", return_value=False):
+                source = create_market_data_source(cache)
+
+        assert isinstance(source, TapetideDataSource)
+
+    def test_override_tapetide_without_key_raises(self):
+        """Forcing Tapetide without a key is a misconfiguration and fails fast."""
+        cache = PriceCache()
+
+        with patch.dict(os.environ, {"MARKET_DATA_SOURCE": "tapetide"}, clear=True):
+            with pytest.raises(RuntimeError):
+                create_market_data_source(cache)

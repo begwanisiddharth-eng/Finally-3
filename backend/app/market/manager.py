@@ -79,10 +79,22 @@ class MarketDataManager(MarketDataSource):
         async with self._lock:
             return await self._active.validate_ticker(ticker) if self._active else False
 
+    # Stable lowercase labels for the active source. Consumed by the LLM
+    # portfolio context (§9, drives the SEBI-disclaimer rule) and the
+    # /api/health payload, so these must match the literals the plan uses --
+    # not the Python class names.
+    _SOURCE_LABELS = {
+        "TapetideDataSource": "tapetide",
+        "SimulatorDataSource": "simulator",
+    }
+
     @property
     def active_source_name(self) -> str:
-        """Class name of the currently active source (e.g. for a /api/health field)."""
-        return type(self._active).__name__ if self._active else "none"
+        """Stable label of the active source: 'tapetide', 'simulator', or 'none'."""
+        if self._active is None:
+            return "none"
+        name = type(self._active).__name__
+        return self._SOURCE_LABELS.get(name, name)
 
     # --- Internal ---
 

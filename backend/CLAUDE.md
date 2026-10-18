@@ -57,5 +57,5 @@ uv run --extra dev ruff check app/ tests/ # Lint
 ## Demo
 
 ```bash
-uv run market_data_demo.py   # Live terminal dashboard with simulated prices
+uv run --extra demo market_data_demo.py   # Live terminal dashboard with simulated prices
 ```

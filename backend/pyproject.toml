@@ -10,7 +10,6 @@ dependencies = [
     "numpy>=2.0.0",
     "mcp>=2.3.0",
     "httpx2",
-    "rich>=13.0.0",
     "python-dotenv>=1.0.0",
     "tzdata>=2024.1; sys_platform == 'win32'",
 ]
@@ -21,6 +20,11 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.7.0",
+]
+# rich is only used by market_data_demo.py, not the app itself.
+# Run the demo with: uv run --extra demo market_data_demo.py
+demo = [
+    "rich>=13.0.0",
 ]
 
 [build-system]

@@ -34,6 +34,9 @@ uv run pytest --cov=app --cov-report=html
 # Run specific test file
 uv run pytest tests/market/test_simulator.py
 
+# Run the terminal demo (rich is an optional 'demo' extra, not an app dependency)
+uv run --extra demo market_data_demo.py
+
 # Run with verbose output
 uv run pytest -v
 ```

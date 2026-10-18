@@ -23,6 +23,12 @@ Single local process serving everything on port 8000, no Docker:
 - **AI**: LiteLLM → Groq (`groq/openai/gpt-oss-120b`) with structured outputs
 - **Market data**: Built-in GBM simulator (default) or Tapetide MCP for real NSE data during trading hours (optional)
 
+## Prerequisites
+
+- Python 3.12+ and [`uv`](https://docs.astral.sh/uv/)
+- Node.js LTS and npm
+- Windows only: the `.ps1` scripts may need `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
 ## Quick Start
 
 ```bash
