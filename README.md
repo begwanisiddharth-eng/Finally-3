@@ -47,9 +47,13 @@ cp .env.example .env
 
 | Variable | Required | Description |
 |---|---|---|
-| `GROQ_API_KEY` | Yes | Groq API key for AI chat |
+| `GROQ_API_KEY` | Yes (unless `LLM_MOCK=true`) | Groq API key for AI chat |
 | `TAPETIDE_API_KEY` | No | Tapetide MCP bearer token for real NSE market data; omit to use simulator |
 | `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
+| `MARKET_DATA_SOURCE` | No | `auto` (default), `simulator`, or `tapetide` — force the data source regardless of key/clock |
+| `DATABASE_PATH` | No | Override the SQLite file location (default: repo `db/finally.db`) |
+| `FRONTEND_DIR` | No | Override the static export location (default: repo `frontend/out`) |
+| `PORT` | No | Port the start scripts bind (default 8000); not read by the app at runtime |
 
 ## Project Structure
 

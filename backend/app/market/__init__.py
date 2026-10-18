@@ -16,7 +16,7 @@ Public API:
 
 from .cache import PriceCache
 from .factory import create_market_data_source
-from .interface import MarketDataSource
+from .interface import MarketDataError, MarketDataSource
 from .manager import MarketDataManager
 from .models import PriceUpdate
 from .stream import create_stream_router
@@ -25,6 +25,7 @@ __all__ = [
     "PriceUpdate",
     "PriceCache",
     "MarketDataSource",
+    "MarketDataError",
     "MarketDataManager",
     "create_market_data_source",
     "create_stream_router",

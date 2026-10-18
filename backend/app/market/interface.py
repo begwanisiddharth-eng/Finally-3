@@ -5,6 +5,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 
+class MarketDataError(Exception):
+    """Raised when a market data source cannot be reached — a transport or
+    connection failure — as distinct from a definitive "symbol not found"
+    answer. This lets the validation path (§6) map an unreachable source to a
+    5xx ("couldn't check") rather than a 400 ("no such ticker"), so a network
+    blip is never reported to the user as an invalid symbol.
+    """
+
+
 class MarketDataSource(ABC):
     """Contract for market data providers.
 
@@ -63,4 +72,11 @@ class MarketDataSource(ABC):
         Used before adding a ticker to the watchlist, so an unrecognized
         symbol can be rejected with a user-facing error instead of silently
         never receiving a price.
+
+        The bool answer means the source was actually reached and gave a
+        verdict (True = exists, False = does not). If the source cannot be
+        reached at all (transport/connection failure), this raises
+        `MarketDataError` instead of returning False — the caller must not
+        treat "couldn't check" as "invalid symbol" (§6). Sources with no
+        network dependency (the simulator) never raise.
         """

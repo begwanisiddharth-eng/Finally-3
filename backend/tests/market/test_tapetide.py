@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.market.cache import PriceCache
+from app.market.interface import MarketDataError
 from app.market.tapetide_client import TapetideDataSource
 
 
@@ -182,9 +183,35 @@ class TestTapetideDataSource:
 
         assert await source.validate_ticker("NOTAREALTICKER") is False
 
-    async def test_validate_ticker_without_connection(self):
+    async def test_validate_ticker_without_connection_raises(self):
         cache = PriceCache()
         source = TapetideDataSource(api_key="test-key", price_cache=cache)
-        # No client connected yet (start() not called)
+        # No client connected yet (start() not called): a transport failure,
+        # not a verdict that the symbol is invalid.
 
-        assert await source.validate_ticker("RELIANCE") is False
+        with pytest.raises(MarketDataError):
+            await source.validate_ticker("RELIANCE")
+
+    async def test_validate_ticker_transport_failure_raises(self):
+        cache = PriceCache()
+        source = TapetideDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+        source._client.call_tool = AsyncMock(side_effect=Exception("network error"))
+
+        with pytest.raises(MarketDataError):
+            await source.validate_ticker("RELIANCE")
+
+    async def test_naive_timestamp_assumed_ist(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        cache = PriceCache()
+        source = TapetideDataSource(api_key="test-key", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["RELIANCE"]
+        # A naive upstream timestamp (no offset) must be read as IST, not local.
+        source._client = _mock_client([_quote("RELIANCE", 1211.20, "2026-10-16T10:29:44")])
+
+        await source._poll_once()
+
+        expected = datetime(2026, 10, 16, 10, 29, 44, tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
+        assert cache.get("RELIANCE").timestamp == expected

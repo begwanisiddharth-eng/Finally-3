@@ -12,18 +12,34 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from .cache import PriceCache
-from .interface import MarketDataSource
+from .interface import MarketDataError, MarketDataSource
 
 logger = logging.getLogger(__name__)
 
 TAPETIDE_MCP_URL = "https://mcp.tapetide.com/mcp"
 BATCH_SIZE = 20  # get_batch_quotes accepts at most 20 symbols per call
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _parse_timestamp(value: str) -> float:
+    """Parse an ISO-8601 timestamp to Unix seconds, assuming IST if naive.
+
+    Tapetide's `updated_at` is normally offset-aware. If an upstream value ever
+    arrives naive (no offset), it is assumed to be IST rather than interpreted
+    in the server's local zone, which would silently shift display times on a
+    non-IST machine (§7).
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+    return dt.timestamp()
 
 
 class TapetideDataSource(MarketDataSource):
@@ -46,6 +62,9 @@ class TapetideDataSource(MarketDataSource):
         self._tickers: list[str] = []
         self._task: asyncio.Task | None = None
         self._client: Client | None = None
+        # The poll loop and validate_ticker share one MCP Client; serialize all
+        # tool calls so they are never issued concurrently on it (§6).
+        self._call_lock = asyncio.Lock()
 
     async def start(self, tickers: list[str]) -> None:
         self._tickers = list(tickers)
@@ -83,10 +102,19 @@ class TapetideDataSource(MarketDataSource):
         return list(self._tickers)
 
     async def validate_ticker(self, ticker: str) -> bool:
-        """Check `ticker` against Tapetide itself via a single-symbol quote."""
+        """Check `ticker` against Tapetide itself via a single-symbol quote.
+
+        Returns True/False only when Tapetide was actually reached. Raises
+        `MarketDataError` on a transport/connection failure (including no live
+        client), so the caller does not mistake "couldn't check" for "invalid
+        symbol" (§6).
+        """
         if not self._client:
-            return False
-        result = await self._call_batch_quotes([ticker.upper().strip()])
+            raise MarketDataError("Tapetide client is not connected")
+        try:
+            result = await self._call_batch_quotes([ticker.upper().strip()])
+        except Exception as e:
+            raise MarketDataError(f"Tapetide validation transport failure: {e}") from e
         return bool(result) and result[0].get("found", False)
 
     # --- Internal ---
@@ -135,7 +163,7 @@ class TapetideDataSource(MarketDataSource):
                     continue
                 try:
                     price = quote["price"]
-                    timestamp = datetime.fromisoformat(quote["updated_at"]).timestamp()
+                    timestamp = _parse_timestamp(quote["updated_at"])
                     self._cache.update(
                         ticker=ticker,
                         price=price,
@@ -149,6 +177,7 @@ class TapetideDataSource(MarketDataSource):
         """Call the get_batch_quotes tool and return its `data` list."""
         if not self._client:
             return []
-        result = await self._client.call_tool("get_batch_quotes", {"symbols": symbols})
+        async with self._call_lock:
+            result = await self._client.call_tool("get_batch_quotes", {"symbols": symbols})
         payload = result.structured_content
         return payload.get("data", []) if payload else []
