@@ -113,7 +113,7 @@ finally/
 ├── db/                       # SQLite file lives here at runtime
 │   └── .gitkeep              # Directory exists in repo; finally.db is gitignored
 ├── .env                      # Local env vars (gitignored); fresh clones have only .env.example — scripts bootstrap .env from it (§11)
-├── .env.example              # Committed template for .env (lists every supported var)
+├── .env.example              # Committed template for .env (lists every supported var; the optional ones are present as commented-out lines)
 ├── .finally.pid              # Running backend PID (gitignored; written by the start scripts, §11)
 └── .gitignore
 ```
@@ -163,10 +163,10 @@ PORT=8000
 - Under `auto`: if `TAPETIDE_API_KEY` is set and non-empty, AND the current time is within NSE trading hours (9:15am-3:30pm IST, Mon-Fri) → backend polls Tapetide for real market data. The check converts the server's local time to IST explicitly (the server may run in any timezone) and is a weekday/clock-time approximation only — it does not account for NSE holidays, so a market holiday that falls on a weekday is still treated as trading hours (Tapetide simply won't show price movement that day).
 - Otherwise (no key, or outside NSE trading hours) → backend uses the built-in market simulator, seeded from the last known real price when available.
 - If Tapetide is the desired source but its MCP connection repeatedly fails, the manager falls back to the simulator — see §6, "Tapetide Failure / Degraded Mode."
-- **This is not a one-time decision at startup.** A background supervisor re-evaluates the source every ~60s and hands the app over the moment the condition changes — a session started during trading hours runs on Tapetide until 3:30pm then falls over to the simulator automatically, and a session started outside trading hours picks up Tapetide the moment the market opens, without a restart. See §6, "Live Handover." Note the supervisor re-reads only `os.environ` and the clock, **not** the `.env` file: `.env` is loaded once at startup (below), so adding/removing a key in `.env` while the app runs does not trigger a handover — only the clock boundary does. A changed `.env` requires a restart.
+- **This is not a one-time decision at startup.** A background supervisor re-evaluates every ~60s and hands over the moment the condition changes, without a restart (§6, "Live Handover"). It re-reads only `os.environ` and the clock, **not** `.env` (loaded once at startup), so changing a key in `.env` mid-run needs a restart; only the clock boundary triggers an automatic handover.
 - If `LLM_MOCK=true` → backend returns deterministic mock LLM responses (for E2E tests).
 - `DATABASE_PATH` and `FRONTEND_DIR` are read by `main.py` to locate the SQLite file and the static export (both default to the repo-root-relative paths in §11). `PORT` is different: `main.py` does **not** read it — uvicorn owns the bind, so the **start scripts** pass `--port $PORT` (§11). These exist mainly so E2E tests get an isolated DB, forced source, and port (§12).
-- The backend loads `.env` from the project root itself at startup, via `python-dotenv`'s `load_dotenv()` called at the top of `app/main.py` (not via a container `--env-file` or a shell-level export) — this is a direct dependency of the backend (`pyproject.toml`), not something agents may skip.
+- The backend loads `.env` from the project root itself at startup, via `python-dotenv`'s `load_dotenv(REPO_ROOT / ".env")` called at the top of `app/main.py` (not via a container `--env-file` or a shell-level export). The path is explicit, not a bare `load_dotenv()`: the process CWD is `backend/` (§11), so relying on dotenv's CWD/stack-walking search is the same working-directory trap §11 avoids for `db/` and `frontend/out/`. If it loaded nothing, `GROQ_API_KEY` would silently be absent and every `/api/chat` call would 502. `python-dotenv` is a direct dependency of the backend (`pyproject.toml`), not something agents may skip.
 
 ---
 
@@ -194,10 +194,10 @@ therefore agnostic not just to *which* source is active, but to the fact that it
 
 - Tapetide (`https://mcp.tapetide.com/mcp`) is an **MCP server**, not a plain REST API — it has no separate HTTP/REST endpoint of its own. The backend therefore acts as a minimal MCP client itself: it opens an MCP streamable-HTTP connection to that URL, authenticated with a `Bearer` token (`TAPETIDE_API_KEY`), and calls the `get_batch_quotes` tool directly — no interactive/chat MCP usage, just a programmatic tool call from a background task
 - Use the latest official MCP Python SDK (`mcp` package) for the client; `uv add mcp`. The SDK's streamable-HTTP transport is built on `httpx2` (the `httpx`/`httpx-sse` successor), which is also a direct dependency (`uv add httpx2`) since the client builds its own `httpx2.AsyncClient` to attach the Bearer auth header.
-- Polls `get_batch_quotes` with the full watchlist (up to 20 symbols per call; the 10-ticker default watchlist fits in one call) every 2 seconds
-- The user's Tapetide plan is capped at 400 calls/day. At 1 call every 2 seconds, that's 30 calls/minute, so 400 calls is only **~13 minutes of continuous polling** — roughly 2-3 five-minute demo sessions per day, not "a few runs per day." The polling interval is a backend config constant, not something the frontend controls, so it's easy to raise (reducing call frequency) if the daily cap is at risk; the project owner is expected to run short, deliberate demo sessions rather than leave Tapetide polling running continuously.
-- Parses the MCP tool response into the same cache fields as the simulator (ticker, price, previous price, previous close, timestamp) — `previous_close` comes from Tapetide's real exchange previous close and drives the watchlist's daily change % (see "Daily Change %" below)
-- SEBI disclaimer requirement: because the backend cannot reliably classify a turn as "advisory," the disclaimer is applied **unconditionally to every assistant chat turn while `data_source == "tapetide"`** — appended deterministically by the backend after the LLM responds, not left to the model (§9, "SEBI disclaimer is enforced server-side"). The exact text is: *"Disclaimer: This is not financial advice. I am not a SEBI-registered research analyst or investment advisor. Please consult a qualified financial advisor before making any investment decisions."* Plain quote display (watchlist prices, charts) and watchlist operations are not chat turns and never carry it. In practice, most demo runs happen outside NSE hours and never touch Tapetide, so this path is rarely exercised. (§9 is the operative rule; this bullet defers to it.)
+- Polls `get_batch_quotes` with the full tracked set (watchlist ∪ held positions, §6 — held-but-unwatched tickers are polled too; up to 20 symbols per call, the 10-ticker default fits in one call) every 2 seconds
+- The user's Tapetide plan is capped at 400 calls/day. At 1 call every 2 seconds, that's 30 calls/minute, so 400 calls is only **~13 minutes of continuous polling** — roughly 2-3 five-minute demo sessions per day, not "a few runs per day." The polling interval is a named backend constant (`TAPETIDE_POLL_SECONDS`, default `2`), not something the frontend controls, so it's easy to raise (reducing call frequency) if the daily cap is at risk. Because `auto` begins polling the moment the supervisor sees key + trading hours — draining ~13 minutes of budget unattended — the Tapetide source logs a **one-time warning when it starts polling** (naming the interval and the ~400/day cap) so a forgotten session is visible in the logs. Beyond that, the project owner is expected to run short, deliberate demo sessions rather than leave Tapetide polling continuously; no budget-aware throttle is built.
+- Parses the MCP tool response into the same cache fields as the simulator (ticker, price, previous price, previous close, timestamp) — `previous_close` comes from Tapetide's real exchange previous close and drives the watchlist's daily change % (see "Daily Change %" below). The cache is keyed by the **requested** ticker, not Tapetide's resolved symbol, so a mid-session corporate-action rename doesn't orphan the watchlist/position row that asked for it.
+- SEBI disclaimer (exact text, source of truth; §9 is the operative rule): while `data_source == "tapetide"` the backend appends it to **every** assistant chat turn — unconditionally (it can't reliably classify "advisory" turns), deterministically, not via the model. Text: *"Disclaimer: This is not financial advice. I am not a SEBI-registered research analyst or investment advisor. Please consult a qualified financial advisor before making any investment decisions."* Plain quote display and watchlist ops are not chat turns and never carry it; most demo runs are outside NSE hours and never touch this path.
 - No hard cap on watchlist size is enforced in code. If the watchlist grows past 20 tickers, the backend simply issues multiple `get_batch_quotes` calls per poll cycle (more daily-call budget consumed, no functional change). The demo is expected to be run by the project owner, who will keep the watchlist at 15 tickers or fewer.
 
 ### Live Handover
@@ -221,15 +221,18 @@ backend depends on:
 
 ### Tapetide Failure / Degraded Mode
 
-Tapetide can be the *desired* source (key set, trading hours) yet fail to produce data — a bad
-token, a network outage, or a server error. Without a policy, the poller would just log and exit,
-the supervisor would keep considering Tapetide "active" (the desired type is unchanged), and the
-UI would show stale/frozen prices for the rest of the session. The intended behavior instead:
+Tapetide can be the *desired* source (key set, trading hours) yet fail — a bad token, network
+outage, or server error. Without a policy the feed would silently freeze (the poller exits, the
+supervisor still considers Tapetide "active"). The intended behavior instead:
 
 - **Fall back to the simulator after repeated failures, with a cooldown latch so it can't flap.**
   The Tapetide source tracks consecutive connection/poll failures; after **N consecutive
   failures** (default **3**) the manager hands over to the simulator (seeded, as always, from the
-  last known real prices in the cache). Falling back also sets a `_force_fallback` flag plus a
+  last known real prices in the cache). "Failure" must count **both** a swallowed per-batch poll
+  error (`tapetide_client.py` currently logs and `continue`s) **and** a dead poll task (the `_run`
+  task exits on an unhandled error, logging "Tapetide poller crashed", and produces no further
+  per-batch failures) — so a per-poll counter alone would never reach N. Place the counter and the
+  crashed-task check so both arm the fallback. Falling back also sets a `_force_fallback` flag plus a
   `retry_after` timestamp on the manager; while that latch holds, the supervisor **suppresses the
   desired-source swap back to Tapetide** even though the key + clock still say "Tapetide."
   Without the latch the 60s supervisor — whose swap signal is a pure function of key + clock —
@@ -244,8 +247,12 @@ UI would show stale/frozen prices for the rest of the session. The intended beha
 - **Distinguish transport failure from "symbol not found"** when validating a ticker (see "Ticker
   Validation" above): a failed connection must not be reported to the user as an invalid symbol.
 
-Implementation of this degraded-mode policy is deferred until the backend app is wired
-(`app/main.py`); this section is the contract it must satisfy. Covered by a unit test (§12).
+Implementation of this degraded-mode policy is deferred until the backend app is wired, but it is
+**not purely a `main.py` task**: the failure counter and crashed-task detection live in
+`TapetideDataSource`, the `_force_fallback` + `retry_after` latch lives on `MarketDataManager`
+(both currently marked complete), and `main.py` only maps `MarketDataError` to a `503` on the
+validation path and wires the manager. This section is the contract those pieces must satisfy.
+Covered by a unit test (§12).
 
 ### Tracked Tickers = Watchlist ∪ Held Positions
 
@@ -393,7 +400,7 @@ All tables include a `user_id` column defaulting to `"default"`, **except `users
 - `avg_cost` REAL
 - `updated_at` TEXT (ISO timestamp)
 - UNIQUE constraint on `(user_id, ticker)`
-- `avg_cost` only changes on a **buy** (new weighted average: `(old_qty * old_avg_cost + buy_qty * buy_price) / (old_qty + buy_qty)`). A **sell** reduces `quantity` and leaves `avg_cost` unchanged — it is the cost basis for whatever's left, not a running average that should move just because shares were sold. Realized P&L on a sell is `(sell_price - avg_cost) * sell_qty`, logged implicitly via the `trades` row (price vs. the position's `avg_cost` at the time); it is not separately stored. If a sell brings `quantity` to 0, the position row is deleted rather than kept at zero. Because `quantity` is a float, "brings to 0" and "insufficient shares" are compared with a small epsilon (treat `|quantity| < 1e-9` as zero, and allow a sell that exceeds holdings by less than epsilon): a residual like `1e-15` must neither leave a ghost position nor block a full exit.
+- `avg_cost` only changes on a **buy** (new weighted average: `(old_qty * old_avg_cost + buy_qty * buy_price) / (old_qty + buy_qty)`). A **sell** reduces `quantity` and leaves `avg_cost` unchanged — it is the cost basis for whatever's left, not a running average that should move just because shares were sold. Realized P&L is **not tracked**: the `trades` row stores no cost basis, and `avg_cost` is overwritten on the next buy (and the row deleted when a position zeroes), so the avg_cost at the time of a past sale is not recoverable from stored data. Nothing in §2/§10 displays it; to add it later, record `avg_cost` on the `trades` row at execution time. If a sell brings `quantity` to 0, the position row is deleted rather than kept at zero. Because `quantity` is a float, "brings to 0" and "insufficient shares" are compared with a small epsilon (treat `|quantity| < 1e-9` as zero, and allow a sell that exceeds holdings by less than epsilon): a residual like `1e-15` must neither leave a ghost position nor block a full exit.
 
 **trades** — Trade history (append-only log)
 - `id` TEXT PRIMARY KEY (UUID)
@@ -467,14 +474,11 @@ to the user rather than silently adding the ticker itself.
 - `POST /api/chat` request body: `{"message": "<user's text>"}`. The backend loads prior turns
   itself from `chat_messages` (§9 step 2) — the client never echoes conversation history back.
 - `POST /api/chat` failure path: if Groq times out, errors, or returns a response that doesn't
-  parse as the structured schema (§9), the endpoint returns HTTP 502 with
-  `{"error": "<human-readable message>"}` (distinct from the 400 trade/watchlist validation shape,
-  since this is an upstream failure, not a client input error) — no `chat_messages` row is written
-  for a call that failed this way. The frontend's loading indicator (§10) resolves to showing this
-  error inline in the chat panel rather than a silent failure. Because no row is written, a failed
-  turn is **intentionally not persisted** — it will not reappear in history on reload (the LLM
-  never saw it either). So the user's text is not lost, the frontend keeps the typed message in
-  the input box on a 502 (rather than clearing it) so they can retry.
+  parse as the structured schema (§9), the endpoint returns HTTP 502 with `{"error": ...}` (an
+  upstream failure, distinct from the 400 client-input shape). **No `chat_messages` row is
+  written** — the turn is intentionally not persisted and won't reappear on reload (the LLM never
+  saw it). The frontend shows the error inline in the chat panel and keeps the typed message in the
+  input box so the user can retry.
 - The chat panel is not session-only: the frontend loads `/api/chat/history` on mount to
   repopulate the conversation after a page reload, rather than showing an empty panel while the
   LLM (which already has this history via §9 step 2) silently "remembers" turns the user can no
@@ -528,8 +532,8 @@ which is Unix seconds (matching `PriceUpdate.to_dict()`, §6).
 // GET /api/portfolio
 {
   "cash_balance": 985000.00,
-  "positions_value": 15250.00,
-  "total_value": 1000250.00,
+  "positions_value": 7500.00,
+  "total_value": 992500.00,
   "unrealized_pnl": 250.00,
   "positions": [
     {
@@ -567,8 +571,10 @@ which is Unix seconds (matching `PriceUpdate.to_dict()`, §6).
     }
   ]
 }
-// Price fields come straight from the cache (PriceUpdate.to_dict()); a just-added
-// ticker with no price yet reports nulls for the price fields until its first tick.
+// Price fields are a subset of the cache entry (PriceUpdate.to_dict(), §6 — which also
+// carries change/change_percent/previous_price, omitted here). `direction` is tick-over-tick
+// (not the day baseline), so colour the daily-change cell by day_change, not by direction.
+// A just-added ticker with no price yet reports nulls for the price fields until its first tick.
 
 // POST /api/portfolio/trade  -> 200
 {
@@ -620,7 +626,8 @@ which is Unix seconds (matching `PriceUpdate.to_dict()`, §6).
 // POST /api/watchlist -> 200 (idempotent on duplicate)
 {"ticker": "WIPRO", "added_at": "2026-10-19T09:15:00+00:00"}
 
-// DELETE /api/watchlist/{ticker} -> 200 (idempotent if absent)
+// DELETE /api/watchlist/{ticker} -> 200 (idempotent if absent).
+// `removed` reflects whether a row was actually deleted: false if the ticker was not on the list.
 {"ticker": "WIPRO", "removed": true}
 
 // Error shape (all API errors, any status)
@@ -644,14 +651,14 @@ There is a GROQ_API_KEY in the .env file in the project root (the backend loads 
 
 When the user sends a chat message, the backend:
 
-1. Loads the user's current portfolio context: cash, positions with P&L, watchlist with live prices, total portfolio value, and `data_source` (`"tapetide"` or `"simulator"` — `MarketDataManager.active_source_name`, §6). The LLM needs this last field to decide whether the SEBI disclaimer applies (below); without it, there is no way for the model to tell which source the prices it's reasoning about came from.
-2. Loads the last 20 rows of conversation history from the `chat_messages` table (same window `GET /api/chat/history`, §8, exposes to the frontend — one number, stated once, used by both)
+1. Loads the user's current portfolio context: cash, positions with P&L, watchlist with live prices, total portfolio value, and `data_source` (`"tapetide"` or `"simulator"` — `MarketDataManager.active_source_name`, §6). The LLM needs this last field to decide whether the SEBI disclaimer applies (below); without it, there is no way for the model to tell which source the prices it's reasoning about came from. (`active_source_name` also returns `"none"` before the manager is started, but the manager starts in lifespan step 3 — before the app serves requests (§7) — so `/api/chat` and `/api/health` never observe `"none"`.)
+2. Loads the last 20 rows of conversation history from the `chat_messages` table (same window `GET /api/chat/history`, §8, exposes to the frontend — one number, stated once, used by both). The window can open on an assistant row with no preceding user row; prompt construction must tolerate that rather than assume strict user/assistant pairing.
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
 4. Calls the LLM via LiteLLM → Groq, requesting structured output, using the groq-skill
 5. Parses the complete structured JSON response
 6. Auto-executes any trades or watchlist changes specified in the response, in a deterministic order (see "Auto-Execution" below), collecting a per-action result
 7. Stores the message and the per-action results in `chat_messages`
-8. Returns the complete JSON response to the frontend (no token-by-token streaming — Groq inference is fast enough that a loading indicator is sufficient)
+8. Returns the complete JSON response (`message` + `actions`, no portfolio payload) to the frontend (no token-by-token streaming — Groq inference is fast enough that a loading indicator is sufficient). The frontend refetches `GET /api/portfolio` and `GET /api/watchlist` when `actions` is non-empty, so AI-executed changes surface in the non-chat panels (§10).
 
 ### Structured Output Schema
 
@@ -681,6 +688,8 @@ Trades specified by the LLM execute automatically — no confirmation dialog. Th
 - It demonstrates agentic AI capabilities — the core theme of the course
 
 If a trade fails validation (e.g., insufficient cash), the error is included in the chat response so the LLM can inform the user.
+
+There is **no confirmation gate by design**: portfolio/watchlist text is fed into the prompt (step 1), so a crafted message could in principle drive an unintended trade. This is accepted because the money is simulated — the stakes are zero — and every AI trade still passes the same validation (tracked ticker, sufficient cash/shares, §8) as a manual one.
 
 **Execution order (deterministic).** A single response may contain both watchlist changes and trades. The backend executes them in a fixed order so outcomes do not depend on array ordering:
 
@@ -731,12 +740,10 @@ ticker and give up). Exact-match, not fuzzy:
 
 `quantity` is always a fixed `1` for mock trades — a deliberate test simplification, not a general mock capability. This table covers exactly the E2E scenarios in §12 (trade execution inline, watchlist add/remove) — it is intentionally not a general-purpose mock LLM.
 
-The "add" extraction is deliberately naive — it takes *any* non-verb all-caps token, not just real
-symbols, so a mock message like "ADD SOME IDEA" would propose `watchlist_changes: [{ticker:
-"SOME", action: "add"}]`. This is harmless: the proposed ticker still goes through the same
-`validate_ticker` check (§6) as any other add, so an unrecognized token like `SOME` gets rejected
-there, not here. E2E tests for the add scenario must still use a real symbol (e.g. WIPRO) to
-observe a successful add.
+The "add" extraction is deliberately naive — any non-verb all-caps token, not just real symbols
+(e.g. "ADD SOME IDEA" proposes `{ticker: "SOME", action: "add"}`). Harmless: the token still goes
+through `validate_ticker` (§6), so an unrecognized one like `SOME` is rejected there. E2E add tests
+must use a real symbol (e.g. WIPRO) to observe a success.
 
 ---
 
@@ -753,14 +760,14 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
 - **Recent trades panel** — a compact, read-only list of the latest trades from `GET /api/portfolio/trades` (ticker, side, quantity, price, time), most recent first. This is the UI consumer of that endpoint (§8).
 - **Trade bar** — simple input area: ticker field, quantity field, buy button, sell button. Market orders, instant fill. The quantity field accepts decimal input (schema supports fractional shares, §7); the API rejects a quantity that is zero or negative with the standard `400` error shape (§8).
-- **AI chat panel** — docked/collapsible sidebar. Loads prior messages from `GET /api/chat/history` on mount (§8), so a page reload doesn't show an empty panel. Message input, scrolling conversation history, loading indicator while waiting for LLM response. The input is disabled while a request is pending (single-user, but two tabs could otherwise interleave turns). Trade executions and watchlist changes shown inline as confirmations.
-- **Header** — portfolio total value (updating live), connection status indicator (reflects the SSE connection), a **data-freshness indicator**, and cash balance. The SSE connection can stay green while prices freeze (e.g. Tapetide polls failing before fallback, §6), so the freshness indicator shows the last-updated time or a "stale" badge driven by `market_data_healthy` from `GET /api/health` (§8) — distinct from the connection dot.
+- **AI chat panel** — docked/collapsible sidebar. Loads prior messages from `GET /api/chat/history` on mount (§8), so a page reload doesn't show an empty panel. Message input, scrolling conversation history, loading indicator while waiting for LLM response. The input is disabled while a request is pending (single-user, but two tabs could otherwise interleave turns). Trade executions and watchlist changes shown inline as confirmations. **After any chat turn whose response `actions` array is non-empty, the frontend refetches `GET /api/portfolio` and `GET /api/watchlist`** so the positions table, heatmap, header totals, and watchlist membership reflect AI-executed changes (the chat response carries only `message` + `actions`, no portfolio payload, and SSE carries prices only).
+- **Header** — portfolio total value (updating live), connection status indicator (reflects the SSE connection), a **data-source badge** ("LIVE (NSE)" vs "SIMULATED", from `data_source` in `GET /api/health`) so the user can tell whether prices are real — the same distinction the SEBI disclaimer hinges on (§9), a **data-freshness indicator**, and cash balance. The SSE connection can stay green while prices freeze (e.g. Tapetide polls failing before fallback, §6), so the freshness indicator shows the last-updated time or a "stale" badge driven by `market_data_healthy` from `GET /api/health` (§8) — distinct from the connection dot. The frontend polls `GET /api/health` every ~5s for both the badge and the freshness state (health is not part of the SSE stream); a health response older than the `market_data_healthy` window (~10s, §6) is itself treated as stale.
 
 ### Technical Notes
 
 - Use `EventSource` for SSE connection to `/api/stream/prices`
 - Two charting libraries, each used for what it's good at: **Lightweight Charts** for the time-series charts (sparklines, main chart, P&L chart) — canvas-based, built for financial time series; **Recharts' `Treemap`** component (built on `d3-hierarchy` internally) for the portfolio heatmap (§2), since Lightweight Charts has no treemap primitive. This is a deliberate two-library split, not an either/or choice left to the Frontend Engineer.
-- Lightweight Charts requires **strictly ascending, unique** time values, but two SSE updates can carry the same Unix second. The frontend must aggregate the live buffer to **one point per second (last price wins)** — or map to a monotonically increasing sequence — before feeding the sparkline, main chart, and P&L chart; otherwise the library throws or silently drops points. The accumulated buffer is page-lifetime and unbounded, so cap it (e.g. keep the last N points) if long sessions matter.
+- Lightweight Charts requires **strictly ascending, unique** time values, but two SSE updates can carry the same Unix second. The frontend must aggregate the live buffer to **one point per second (last price wins)** — or map to a monotonically increasing sequence — before feeding the SSE-fed charts (sparkline and main chart); otherwise the library throws or silently drops points. (The P&L chart is sourced from `portfolio_snapshots` at a 30s cadence — already strictly ascending and unique — so it is not on the SSE buffer and needs no such aggregation.) The accumulated buffer is page-lifetime and unbounded, so cap it (e.g. keep the last N points) if long sessions matter.
 - Price flash effect: flash only when the price actually moved — trigger on `direction != "flat"` (equivalently `change != 0`), **not** on every SSE frame (frames repeat even when nothing changed, §6). On a move, briefly apply a CSS class with a ~250ms background color transition, then remove it (§2 — shorter than the ~500ms simulator tick so flashes don't overlap). As a result, flashes are naturally sparse for low-priced tickers whose 2-dp price rarely changes per tick (§13), which is expected.
 - All API calls go to the same origin (`/api/*`) — no CORS configuration needed
 - Tailwind CSS for styling with a custom dark theme
@@ -804,6 +811,8 @@ If `main.py` used the literal relative paths instead, running from `backend/` wo
 
 The frontend is a single-page application with no client-side routing (§10) — there is exactly one HTML entry point (`index.html`). FastAPI's static mount therefore needs no SPA catch-all/fallback route. Mount it with `StaticFiles(directory=FRONTEND_OUT, html=True)` at `/` (so `index.html` is served at `/`), and register this mount **after** all `/api/*` routers so the `/` mount cannot shadow the API routes. Static assets (`/_next/...`, favicon) are served by the same mount — they are part of "everything else", not a special case.
 
+Static export (`output: 'export'`) disables Next.js server features — API routes, ISR, and on-demand image optimization — so if `next/image` is used it needs `images: { unoptimized: true }` in `next.config`. The app has no need of those server features anyway (all dynamic data comes from the FastAPI `/api/*` endpoints).
+
 No container runtime, no image build, no volume mounts — the backend reads `.env` and writes `db/finally.db` directly on the host filesystem.
 
 ### Start/Stop Scripts
@@ -823,7 +832,7 @@ The macOS/Linux and Windows scripts share the same shape and the same flags — 
 - Read `.finally.pid`, stop that process (`Stop-Process` on Windows), and remove the PID file. If the file is missing or the PID is stale, exit cleanly — never kill an unrelated PID.
 - Do NOT delete `db/finally.db` (data persists across runs).
 
-All scripts are idempotent — safe to run multiple times. `.finally.pid` is gitignored (§4).
+All scripts are idempotent — safe to run multiple times. The PID-file path defaults to `.finally.pid` (gitignored, §4) but is overridable via the `FINALLY_PID_FILE` env var, so a second instance on a different `PORT` (the E2E harness, §12) gets its own PID file and the already-running/stop logic never touches a developer's `.finally.pid`.
 
 ### Optional Cloud Deployment
 
@@ -843,7 +852,7 @@ Cloud/container deployment (AWS App Runner, Render, etc.) is explicitly out of s
 
 **Frontend (Vitest + React Testing Library)**:
 - Component rendering with mock data
-- Price flash animation triggers correctly on price changes
+- Price flash: the flash CSS class is toggled on `direction != "flat"` and not on an unchanged frame (jsdom can't observe the CSS transition itself, so the test asserts the class toggle / trigger, not the visual fade)
 - Watchlist CRUD operations
 - Portfolio display calculations
 - Chat message rendering and loading state
@@ -854,7 +863,7 @@ Frontend stack is pinned to prevent divergent agent choices: Next.js (App Router
 
 **Infrastructure**: Playwright tests run directly against a locally started instance of the app (via the start script), with no Docker/Playwright containers involved.
 
-**Environment**: The E2E harness starts the app with `LLM_MOCK=true`, `MARKET_DATA_SOURCE=simulator` (deterministic prices, no Tapetide budget spent — the default `auto` source otherwise depends on the wall clock and `.env`), a temporary `DATABASE_PATH` (tests never touch the user's `db/finally.db`), and a dedicated test `PORT` (no collision with a running app on 8000). The harness starts the app before the suite and tears it down after (via the start/stop scripts or an equivalent fixture).
+**Environment**: The E2E harness starts the app with `LLM_MOCK=true`, `MARKET_DATA_SOURCE=simulator` (deterministic prices, no Tapetide budget spent — the default `auto` source otherwise depends on the wall clock and `.env`), a temporary `DATABASE_PATH` (tests never touch the user's `db/finally.db`), a dedicated test `PORT` (no collision with a running app on 8000), and its own `FINALLY_PID_FILE` (§11) so it never overwrites or deletes a developer's `.finally.pid`. The harness starts the app before the suite and tears it down after (via the start/stop scripts or an equivalent fixture).
 
 **Key Scenarios**:
 - Fresh start: default watchlist appears, Rs 10 lakh balance shown, prices are streaming
@@ -862,7 +871,7 @@ Frontend stack is pinned to prevent divergent agent choices: Next.js (App Router
 - Buy shares: cash decreases, position appears, portfolio updates
 - Sell shares: cash increases, position updates or disappears
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
-- AI chat (mocked): send a message, receive a response, trade execution appears inline
+- AI chat (mocked): send a message, receive a response, trade execution appears inline **and the positions table / portfolio totals update** (the post-turn refetch, §9/§10)
 - SSE resilience: reconnection is covered at the **unit** level (EventSource retry logic); the E2E check verifies prices keep updating after a brief interruption rather than driving a raw `EventSource` disconnect from Playwright, which is nontrivial
 
 ---
@@ -886,7 +895,7 @@ it goes stale; a decision worth keeping belongs in the plan, not behind an exter
 - **The two `db` locations are kept as-is** — `backend/db/` (schema + row-seed *code*) and the
   top-level `db/` (runtime `finally.db` *file*) stay separate rather than collapsing into
   `backend/app/db/`. The path footgun this could cause is already guarded by the repo-root path
-  resolution in §11. (Reaffirmed during review; see REVIEW.md finding 4.2.)
+  resolution in §11.
 - **Simulator realism (correlated GBM + random events, §6) is kept** as wanted complexity/polish,
   not simplified to independent per-ticker GBM.
 - **No synthetic 500ms re-emission under Tapetide (§6)** — the stream genuinely runs at the poll
@@ -904,7 +913,7 @@ it goes stale; a decision worth keeping belongs in the plan, not behind an exter
 - **A chat turn that fails upstream (502) is not persisted (§8)** — no `chat_messages` row is
   written; the frontend keeps the typed text so the user can retry, rather than persisting a
   half-turn the LLM never saw.
-- **Flash cadence is sparse for low-priced tickers (§6)** — with `dt ≈ 8.48e-8` and 2-dp cache
-  rounding, many 500ms GBM steps round to no change for lower-priced tickers, so routine flashes
-  are sparse and the random-event mechanism (2-5% moves) supplies most of the visible drama.
-  Accepted as-is; not tuned up, since events already carry the effect.
+- **Flash cadence is sparse for low-priced tickers (§6)** — with the GBM `dt` (see `simulator.py`)
+  and 2-dp cache rounding, many 500ms steps round to no change for lower-priced tickers, so routine
+  flashes are sparse and the random-event mechanism (2-5% moves) supplies most of the drama.
+  Accepted as-is.

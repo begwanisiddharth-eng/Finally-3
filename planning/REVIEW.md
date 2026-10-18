@@ -1,302 +1,310 @@
-# FinAlly — Review of `planning/PLAN.md`
+# PLAN.md Review
 
-**Review date:** 2026-10-19
-**Scope:** `planning/PLAN.md` (879 lines), read end to end with a fresh eye.
-**Method:** Read the plan standalone, then cross-checked the market-data contract against the
-already-built subsystem in `backend/app/market/` to distinguish plan defects from implementation
-drift. This review intentionally does not reference any prior review.
+A fresh review of `planning/PLAN.md` (910 lines), written from scratch. Findings were checked
+against the code that already exists (`backend/app/market/`) where the plan makes factual claims
+about it. Severity is about impact on the build, not on prose quality.
 
----
-
-## Verdict
-
-The plan is unusually complete and internally self-aware. The architecture choices are sound for
-the stated goal (single-process demo, no Docker), the endpoint/response contracts are concrete, and
-the "Design Decisions Log" (§13) captures the tradeoffs that usually go undocumented. It is
-buildable as written.
-
-The concerns below are not showstoppers. They cluster into three buckets: (a) a few genuine
-internal inconsistencies where two sections state different rules, (b) underspecified contracts an
-implementing agent would have to guess at, and (c) places where the delivered market-data code
-already diverges from the plan's own stated contract. The most important ones are
-[1.1](#11-validate_ticker-cannot-express-the-required-transport-vs-not-found-distinction),
-[1.2](#12-sebi-disclaimer-scope-§6-advisory-vs-§9-unconditional),
-[1.3](#13-watchlist-seed-order-is-unachievable-with-the-stated-schema),
-[1.4](#14-degraded-mode-fallback-mechanism-is-underspecified-and-would-flap). Everything else is
-lower-stakes tidy-up.
+**Overall:** the plan is unusually complete and internally coherent for a document this size. It
+is buildable as written. The findings below are mostly (a) a few places where the plan states
+something the schema/code cannot actually support, (b) gaps around what the *frontend* does after
+the AI mutates state, and (c) an earlier decision that got logged but not enforced.
 
 ---
 
-## 1. Internal inconsistencies and contradictions
+## High
 
-### 1.1 `validate_ticker` cannot express the required "transport vs not-found" distinction
-- The interface is `validate_ticker` (a bool-returning method) — §6 line 172, matching
-  `backend/app/market/interface.py:60`.
-- But §6 line 259 says a transport failure "must be distinguished from a genuine `found: false` …
-  must not surface as 'No stock with ticker XYZ exists'", and §6 line 231 repeats the requirement.
+### H1. Realized P&L is claimed to be derivable from the `trades` table, but the schema cannot support it
 
-A boolean cannot carry three states (valid / not-found / transport-failure). Either the method must
-raise on transport failure, return a tri-state, or the validation path must be restructured so the
-error distinction is made by the caller. As written, an implementer cannot satisfy §6 with the §6
-interface. **Pick one and state it.** My preference: `validate_ticker` raises a dedicated
-`TickerValidationError`/transport exception on connection failure and returns bool only for the
-"we actually reached the source" case; the API layer maps the exception to a 502/503 rather than a
-400.
+PLAN.md:396 says: *"Realized P&L on a sell is `(sell_price - avg_cost) * sell_qty`, logged
+implicitly via the `trades` row (price vs. the position's `avg_cost` at the time); it is not
+separately stored."*
 
-### 1.2 SEBI disclaimer scope (§6 advisory vs §9 unconditional)
-- §6 line 194 scopes the disclaimer to responses that contain "commentary, analysis, buy/hold/sell
-  suggestions, or portfolio advice derived from Tapetide data."
-- §9 line 677 says it is appended whenever `data_source == "tapetide"` — unconditionally, for every
-  chat turn.
+The `trades` schema (PLAN.md:398-405) is `id, user_id, ticker, side, quantity, price, executed_at`
+— **there is no cost-basis column**. `positions.avg_cost` is overwritten on the next buy
+(PLAN.md:396) and the position row is *deleted* when a sell zeroes it (PLAN.md:396). So the
+"avg_cost at the time" of a sale is nowhere in the stored data, and realized P&L is therefore **not
+recoverable at all** — it is neither explicitly stored nor implicitly inferable. The sentence
+overstates what the schema provides.
 
-These conflict: under Tapetide, "what is my cash balance?" would get the disclaimer per §9 but not
-per §6. The unconditional server-side rule is the only one that is actually implementable (the
-backend cannot reliably classify "advisory"), so §9 is the sensible rule — but §6's narrower
-phrasing should be corrected to defer to §9, or the mismatch will confuse whoever implements the
-check.
+Nothing in §2 or §10 actually displays realized P&L, so the cheapest fix is to delete the
+"logged implicitly" clause and state plainly that realized P&L is not tracked. If it ever should
+be, add an `avg_cost` (cost basis) column to `trades` and record it at execution time.
 
-### 1.3 Watchlist seed order is unachievable with the stated schema
-§7 line 366 requires the watchlist to be "Returned ordered by `added_at ASC` (tie-broken by `id`) …
-so the default ten appear in their seed order." The `id` is a **UUID** (line 360), and the ten seed
-rows are inserted together. If they share an `added_at` value, the `id` tie-break sorts by random
-UUID — the exact "arbitrary order" the sentence is trying to avoid.
+### H2. The plan never says the non-chat UI refreshes after AI-executed trades/watchlist changes
 
-To actually guarantee seed order you need one of: staggered `added_at` values on insert, an integer
-`sort_order`/autoincrement column, or an explicit seed-order column. As specified, the stated goal
-and the stated tie-break are contradictory.
+The headline feature is that the AI executes trades and edits the watchlist (§9 "Auto-Execution",
+PLAN.md:676-691). But the `POST /api/chat` response carries only `message` + `actions`
+(PLAN.md:598-609) — **no portfolio payload** — and the SSE stream carries **prices only**. §10's
+chat panel says only that actions are "shown inline as confirmations" (PLAN.md:756).
 
-### 1.4 Degraded-mode fallback mechanism is underspecified and would flap
-§6 (lines 216–235) says the manager "hands over to the simulator" after N consecutive Tapetide
-failures, and that "if Tapetide recovers while still in trading hours it will be picked up again on
-a later check." But:
+Consequence: after the AI buys 10 HDFCBANK, the positions table, heatmap, cash balance, header
+total, and (for watchlist changes) the watchlist *membership* all stay stale until something else
+happens to refetch. For manual trades this is fine because the trade response embeds the
+post-trade portfolio (PLAN.md:573-584), but the chat path has no equivalent.
 
-- The manager's only swap signal today is `create_market_data_source()` (a pure function of key +
-  clock). While trading hours hold and the key is set, that function keeps returning Tapetide, so
-  the 60 s supervisor would swap *back* to the still-broken Tapetide on the very next check — an
-  endless sim↔Tapetide flap every minute.
-- Nothing in the plan defines where the "we fell back" latch lives, nor a cooldown/backoff before
-  retrying Tapetide.
-
-This needs a concrete contract: e.g. the manager holds a `_force_fallback` flag plus a
-`retry_after` timestamp, suppresses the desired-source swap until the cooldown elapses, and
-periodically re-attempts Tapetide. Right now the section is a behavior description with no
-mechanism, and the obvious naive implementation is wrong.
-
-### 1.5 Who owns `PORT`?
-- §5 line 151/162 presents `PORT` as a backend setting ("overrides the bind port").
-- §11 line 762 launches `uvicorn … --port 8000` on the command line; `main.py` cannot override a
-  port uvicorn has already bound.
-
-So `PORT` is only meaningful if the **start scripts** plumb it into `uvicorn --port $PORT`. The
-plan should say that explicitly, and stop implying the app reads `PORT` at runtime. (`DATABASE_PATH`
-and `FRONTEND_DIR` *are* read by `main.py`; `PORT` is not in the same category.)
-
-### 1.6 "Only when the cache actually changes" overstates the SSE contract
-§6 line 296–302 says the stream pushes "only when the cache actually changes." In the built code
-the cache version increments on **every** `update()` (`cache.py:54`), and the simulator writes every
-500 ms regardless of whether the 2-dp price moved (`simulator.py:286`). So identical frames are
-re-sent at 500 ms for tickers that didn't move. This is fine behaviorally, but the wording should be
-"on every write" rather than "when the cache actually changes," or the frontend author may assume
-frames are deduplicated (they are not).
-
-### 1.7 Start-script key handling vs the E2E path
-§11 line 788 says the start script warns — or fails — when `GROQ_API_KEY` is not filled in. §12
-line 830 says the E2E harness starts the app with `LLM_MOCK=true`, where the key is irrelevant and
-often absent in CI. If the script treats an empty/placeholder key as fatal, the documented E2E
-launch cannot start. Clarify: `LLM_MOCK=true` must bypass the key check entirely, and the script
-must tolerate the literal placeholder `your-groq-api-key-here` as "not filled in" (or never fail,
-only warn).
+Fix: state explicitly either (a) that the frontend refetches `GET /api/portfolio` and
+`GET /api/watchlist` after any chat turn whose `actions` contain executed/failed entries, or
+(b) that `POST /api/chat` returns the post-execution `portfolio` too (mirroring the trade
+response). Add a matching E2E assertion (§12 already checks "trade execution appears inline", but
+not that the portfolio panel updated).
 
 ---
 
-## 2. Gaps / underspecified contracts
+## Medium
 
-1. **`current_price` for an un-priced position.** §8 line 543 documents null price fields for a
-   just-added watchlist ticker, but the `/api/portfolio` shape (lines 511–522) assumes every
-   position has a `current_price` and non-null `market_value`/`unrealized_pnl`. A held ticker whose
-   Tapetide first poll hasn't landed yet has no cached price (the startup-snapshot fallback at §7
-   line 331 uses `avg_cost`, but the *endpoint* response isn't specified). Define the null/fallback
-   behavior for the endpoint, not just the snapshot.
-2. **`market_data_healthy` window.** §6 line 230 / §8 line 603 define it as "written within a recent
-   window" without a number. Given Tapetide's 2 s cadence, the window must be comfortably larger
-   (e.g. 10 s). State it.
-3. **Persisted assistant content and the disclaimer.** §9 line 626 stores "the message"; §8 line 588
-   shows the assistant `content`. It is unstated whether the stored content is the pre- or
-   post-disclaimer text. It should be the final (post-append) text so a reload via
-   `/api/chat/history` shows exactly what the user saw.
-4. **`POST /api/watchlist` — duplicate check vs validation order.** §8 line 480 makes re-adding
-   idempotent-200; §6 line 259 notes each Tapetide validation spends one call of the 400/day budget.
-   Does re-adding an already-watched ticker re-validate (spending a call) or short-circuit on the
-   duplicate lookup first? Specify duplicate-check-first.
-5. **Simulator→Tapetide `previous_close` transition.** §6 lines 284–291 cover the Tapetide→simulator
-   direction (carry-forward) thoroughly, but not what happens when the market opens mid-session and
-   a simulator-sourced `previous_close` is replaced by the real exchange close. The day-change %
-   jumps at that instant; that's probably intended, but it's unstated.
-6. **Flash trigger definition.** §10 line 737 says flash "on receiving a new price," but §13 lines
-   876–878 expect flashes to be *sparse* (rounded prices often unchanged). If "new price" means
-   "every SSE frame," low-priced tickers flash continuously and §13's stated behavior never appears.
-   Define the trigger as `direction != "flat"` (i.e. `change != 0`).
-7. **LLM `quantity` type.** §9 line 637 shows `"quantity": 10` (integer) in the structured schema,
-   but fractional shares are supported (§7). The schema example should show a number and say
-   fractional is allowed, or an agent may type it as `int`.
-8. **`.env.example` doesn't list the optional vars.** §5 documents `MARKET_DATA_SOURCE`,
-   `DATABASE_PATH`, `FRONTEND_DIR`, `PORT`; `.env.example` (the only file a fresh clone sees, per §4
-   line 114) omits all four. Add them commented-out. Same drift exists in the README env table.
-9. **Float-zero and float-compare edges.** Positions are `REAL` and sell-to-zero deletes the row
-   (§7 line 376) — a leftover `1e-15` won't compare `== 0`. Likewise "insufficient shares" is a
-   float comparison. State an epsilon policy, or note that rounding quantities to a sane precision
-   is acceptable.
-10. **Frontend membership source.** §8 line 428 / §6 line 237 mean the SSE payload (entire cache)
-    can include held-but-unwatched tickers that must *not* appear in the watchlist panel. The plan
-    implies the panel keys off `GET /api/watchlist`, but never says it outright. One sentence
-    ("the watchlist panel's membership comes from `/api/watchlist`; SSE supplies prices only") would
-    prevent a panel that renders every streamed ticker.
+### M1. `.env` loading is specified as bare `load_dotenv()` while the app launches from `backend/`
 
----
+PLAN.md:169 says the backend loads `.env` "via python-dotenv's `load_dotenv()` called at the top of
+`app/main.py`". PLAN.md:788-789 launches with `cd backend && uv run uvicorn app.main:app`, so the
+process CWD is `backend/`, while the file lives at the repo root (§4, PLAN.md:115).
 
-## 3. Where delivered market code already diverges from the plan's contract
+`load_dotenv()` with no argument relies on python-dotenv's stack-walking/`find_dotenv` search,
+which happens to walk up from `backend/app/` and find the root `.env` — but that is incidental
+behaviour, not a guarantee. §11 makes a point of *never* trusting the working directory for
+`db/finally.db` and `frontend/out/` (PLAN.md:797-801); the same discipline should apply here.
+Specify `load_dotenv(REPO_ROOT / ".env")` (with the `REPO_ROOT` computation at PLAN.md:799). If
+this is got wrong, `GROQ_API_KEY` silently doesn't load and every `/api/chat` call 502s.
 
-These are things the plan *correctly* requires but the shipped `backend/app/market/` does not do.
-Flagging because the plan is being reviewed as the contract, and STATUS.md currently marks the
-subsystem "complete, tested, reviewed."
+### M2. The Tapetide degraded-mode fallback is mis-attributed to `main.py`, but it must live in already-built market code
 
-1. **Naive Tapetide timestamps are interpreted in the server's local zone, not IST.** §7 line
-   346–348 requires a naive upstream timestamp to be assumed IST. `tapetide_client.py:138` does
-   `datetime.fromisoformat(quote["updated_at"]).timestamp()`, which interprets a naive datetime in
-   *local* time. On a non-IST machine this shifts display times silently — exactly the failure the
-   plan calls out.
-2. **Tapetide validation is not serialized against the poller.** §6 line 259 requires Tapetide tool
-   calls to be serialized (lock/single worker) because validation shares the MCP `Client` with the
-   background poll loop. `TapetideDataSource.validate_ticker` calls `_call_batch_quotes` directly
-   with no lock, concurrent with `_poll_once`. STATUS §"To build" acknowledges this is uncoded, but
-   it lives in the *delivered* `TapetideDataSource`, not in the unbuilt `main.py` — so the
-   "complete" label is premature for that specific requirement.
-3. **Degraded-mode fallback is absent** (see 1.4). STATUS correctly scopes this to `main.py`, but
-   note that the mechanism (1.4) doesn't exist anywhere yet.
+PLAN.md:247-248 says the degraded-mode policy is "deferred until the backend app is wired
+(`app/main.py`)", and STATUS.md also lists it as a `main.py` task. But the contract it describes
+requires changes to the market subsystem that is currently marked complete:
 
-Recommendation: either fix 1 and 2 in the market module, or move them to STATUS "To build" so the
-"complete" claim is honest.
+- "The Tapetide source tracks consecutive connection/poll failures" (§6, PLAN.md:230) → needs a
+  counter in `TapetideDataSource`.
+- `_force_fallback` + `retry_after` latch "on the manager" (§6, PLAN.md:233-239) → needs
+  `MarketDataManager._maybe_handover` (`manager.py:110`) to consult it.
 
----
+Also worth tightening the trigger definition: `TapetideDataSource._run` (`tapetide_client.py:122-141`)
+exits the whole poll task on any unhandled error (it logs "Tapetide poller crashed" and sets
+`_client=None`), while per-batch poll errors are swallowed and `continue`d
+(`tapetide_client.py:148-154`). So "N consecutive failures" must define whether it counts
+per-batch poll failures, a dead task, or both — a crashed task currently produces *no further
+failures*, so a per-poll counter alone would never reach N. State this explicitly and place the
+counter so a crashed poller is also detected.
 
-## 4. Opportunities to simplify
+### M3. The 400-calls/day Tapetide budget is acknowledged but not mitigated, and `auto` will drain it unattended
 
-1. **Collapse the two-baseline prose.** §6 "Daily Change % vs. Tick-over-Tick" states the rule, then
-   re-states it with a handover exception ("This continuity is intended; it refines the 'session
-   start price' wording above"). State it once: *`previous_close` = the exchange close if one has
-   ever been observed for the ticker, else the ticker's first simulated price; it is carried
-   forward across a handover.* One paragraph instead of two plus a correction.
-2. **Reconsider the multi-user scaffolding / two `db/` directories.** §13 defends `user_id` as
-   deliberate, and the two-`db` split (`backend/db/` vs top-level `db/`) is explained — but the
-   latter is a footgun the plan itself guards against in §11 line 776. A single `backend/app/db/`
-   for schema+seed removes the ambiguity for near-zero cost. (The `user_id` call is the author's;
-   just noting it's the largest "complexity not needed for the demo" item.)
-3. **Scale the handover machinery to actual usage.** §6 line 194 says most demos never touch
-   Tapetide. Live handover + degraded mode + serialized validation is a lot of surface for a path
-   that rarely runs. If Tapetide is truly a near-unused path, consider a smaller contract (e.g.
-   decide source once at startup, or drop degraded mode and let the health endpoint expose
-   staleness). If it's kept, fix 1.4 properly.
-4. **Consolidate the scattered scope decisions.** "No synthetic 500 ms re-emission" (§6 line 300,
-   §13 line 861), "main chart has no history" (§10 line 723, §13 line 864), and the heatmap
-   denominator (§10 line 724, §13 line 871) are each stated twice. §13 is the right home; the inline
-   duplicate sentences can shrink to a pointer.
-5. **The `PORT`/`DATABASE_PATH`/`FRONTEND_DIR` story** would be simpler framed as "the start
-   scripts own binding and pass everything to `uvicorn`/`main.py`," rather than three vars described
-   in two different sections as if the app reads them all uniformly (see 1.5).
+PLAN.md:198 correctly computes that 400 calls/day ≈ 13 minutes of continuous 2s polling, then
+relies on "the project owner ... short, deliberate demo sessions". But under the default
+`MARKET_DATA_SOURCE=auto`, merely *leaving the app running during NSE hours with a key set* starts
+polling immediately via the supervisor and drains the daily budget in ~13 minutes with no warning,
+after which (once M2 is built) it flips to the simulator for the rest of the day. There is no
+budget-aware throttle and the poll interval is only "a backend config constant" (PLAN.md:198) — it
+is not surfaced in §5 or `.env.example`.
 
----
+At minimum: name the constant/default in §5 and §6, or add a `TAPETIDE_POLL_INTERVAL` env var, and
+consider logging a one-time warning when a Tapetide session starts. Leaving this purely to operator
+discipline is the weakest operational assumption in the plan.
 
-## 5. Questions for the author
+### M4. §13 contradicts itself by pointing into REVIEW.md
 
-1. For 1.1 — should `validate_ticker` raise on transport failure, or should the caller own the
-   distinction?
-2. For 1.4 — where does the "fell back to simulator" latch live, and what is the retry cooldown?
-3. For 1.3 — are the ten seed rows inserted with distinct `added_at` values, or is an explicit
-   ordering column expected?
-4. For §8 portfolio — what should `current_price` / `market_value` / `unrealized_pnl` be for a held
-   ticker with no cached price yet?
-5. For §9 — is the assistant's stored `chat_messages.content` the post-disclaimer text?
-6. For §12 — does the E2E harness run the platform start scripts, or its own fixture? This changes
-   whether 1.7 matters in practice.
-7. For §6 — is the simulator→Tapetide `previous_close` jump at market open intended to be visible
-   in the day-change %?
+The §13 preamble (PLAN.md:872-875) says the log exists precisely so decisions are *not* left behind
+a "pointer into `planning/REVIEW.md` — that file is regenerated by each review pass and its section
+numbers shift, so a cross-reference into it goes stale." A few lines later, PLAN.md:889 does
+exactly the forbidden thing: *"(Reaffirmed during review; see REVIEW.md finding 4.2.)"*. That
+cross-reference is already stale/meaningless here (no `REVIEW.md` existed at review time). Drop
+the parenthetical; the decision stands on its own.
+
+### M5. No UI indicator of the active data source, despite the whole SEBI disclaimer hinging on it
+
+The SEBI disclaimer is applied server-side only when `data_source == "tapetide"` (§9,
+PLAN.md:704) because real prices carry an advisory obligation. Yet §10's header specifies only a
+connection dot and a freshness badge (PLAN.md:757) — nothing tells the *user* whether the prices
+on screen are real NSE quotes or simulated ones. `GET /api/health` already exposes `data_source`
+(PLAN.md:630), so this is cheap: require the header to show a "LIVE (NSE)" vs "SIMULATED" badge
+from `/api/health`. Without it, a reviewer judging SEBI compliance cannot tell which mode the app
+is in, and the user cannot either.
+
+### M6. Frontend polling of `/api/health` is required but never specified
+
+The header's freshness indicator is "driven by `market_data_healthy` from `GET /api/health`"
+(PLAN.md:757), but neither §8 nor §10 says how often the frontend polls it, or whether it is part
+of the SSE stream. §8 only frames `/api/health` as a start-script readiness probe (PLAN.md:486).
+Specify a cadence (e.g. every 5-10s) and that the freshness badge considers a health response older
+than roughly the `market_data_healthy` window (~10s, PLAN.md:242) as itself stale.
+
+### M7. E2E isolation vs. the single `.finally.pid` file is underspecified
+
+§12 (PLAN.md:857) runs E2E on a dedicated `PORT` with a temp DB, "via the start/stop scripts". But
+the scripts key off a single `.finally.pid` and the already-running check decides based on "a live
+process listening on the port" (PLAN.md:818). Two problems: (1) if a developer's own instance is
+already running, the harness's start script may treat the live-but-wrong-port PID ambiguously
+(PLAN.md:818 only special-cases "process gone"); (2) the harness would overwrite the developer's
+`.finally.pid` on start and delete it on teardown, orphaning the developer's instance. Either give
+the E2E harness its own PID file / launch path, or state that E2E requires no other instance
+running and the scripts take an explicit PID-file override.
+
+### M8. The plan carries volatile implementation constants that will drift from the code
+
+The plan hard-codes several values that live (or will live) in code: the GBM `dt ≈ 8.48e-8` and its
+derivation (§13, PLAN.md:907-909), the 1e-9 quantity epsilon (§7, PLAN.md:396), `N=3` /
+5-minute cooldown / 10s health window (§6, PLAN.md:230-243), and the exact seed prices (§6,
+PLAN.md:189). `dt` and the seed table already exist in `simulator.py:46-47` and
+`seed_prices.py:4-15`; duplicating them in the plan guarantees drift. Consider a single
+"§6.1 Constants" table, or phrase these as "see `<file>`" rather than restating the number.
 
 ---
 
-## 6. Minor / nits
+## Low
 
-- §11 line 756: "per Next.js's `output: 'export'` default" — `out/` is the default *directory* when
-  `output: 'export'` is configured; it is not Next.js's default output mode. Reword.
-- §4 tree omits `.finally.pid` (introduced in §11 line 799) and `.env.example`.
-- §8 line 519 uses `change_percent` for a position's return vs. cost basis, while §6/§8 use
-  `day_change_percent`/`change_percent` for tick-over-tick in the watchlist. Two meanings for
-  "change_percent" invite frontend bugs; consider `return_percent` for the position field.
-- §9 line 696: "scans *all* all-caps alphanumeric tokens" reads awkwardly ("all all-caps").
-- §12 line 839: "SSE resilience: disconnect and verify reconnection" — driving a browser
-  `EventSource` disconnect from Playwright is nontrivial; consider testing reconnect at the unit
-  level and keeping the E2E check to "prices keep updating."
-- §2 "What the user can do" and §10 disagree slightly on the panel list (Recent trades panel is in
-  §10 only). Harmless, but §2 is the user-facing summary and would benefit from matching §10.
+### L1. `GET /api/portfolio` example is internally inconsistent
+
+PLAN.md:528-545: one shown position (HDFCBANK, market_value 7500) but `positions_value` is 15250
+and the implied cash (985000) is not `1,000,000 − 7250`. The header comment states
+`positions_value = sum(market_value)` (PLAN.md:550), which the example violates. Agents copy
+examples verbatim — make the numbers add up, or say the example elides other positions.
+
+### L2. `direction` in the watchlist payload is ambiguous next to the day-change fields
+
+`GET /api/watchlist` returns `day_change`, `day_change_percent`, and `direction` together
+(PLAN.md:563-566). `direction` is *tick-over-tick* (defined in `models.py:51-58`) while its
+neighbours are day-based, inviting a frontend that colours the daily-change cell by tick direction.
+Rename to `tick_direction`, or add a one-line note in the JSON block.
+
+### L3. Watchlist response field list contradicts "straight from `PriceUpdate.to_dict()`"
+
+PLAN.md:570-571 says the price fields "come straight from the cache (`PriceUpdate.to_dict()`)",
+but the documented shape omits `change`/`change_percent` and `previous_price`, which `to_dict()`
+does include (`models.py:60-73`). Either show the full object or say "a subset of `to_dict()`".
+
+### L4. `DELETE /api/watchlist/{ticker}` returns `removed: true` when nothing was removed
+
+PLAN.md:624: the idempotent-success rule (PLAN.md:505-507) means a delete of an absent ticker
+returns `{"ticker": "...", "removed": true}`. That is misleading. Return the actual boolean
+(`removed: false` when absent) or drop the field.
+
+### L5. The "one point per second" chart rule is applied to the P&L chart, which doesn't need it
+
+PLAN.md:763 lumps "sparkline, main chart, and P&L chart" under the aggregation rule. But the P&L
+chart is sourced from `portfolio_snapshots` at a 30s cadence (PLAN.md:752), already strictly
+ascending and unique — it is not on the SSE buffer at all. Scope the rule to the SSE-fed charts.
+
+### L6. `active_source_name` can return `"none"`, which the plan does not acknowledge
+
+`manager.py:94-97` returns `"none"` before the source is started. §9 step 1 (PLAN.md:647) and the
+health example (PLAN.md:630) assume only `"tapetide"`/`"simulator"`. State the pre-start behaviour
+(or guarantee the field is never surfaced before start), especially since the SEBI rule branches on
+this exact value.
+
+### L7. Tapetide "polls the full watchlist" should be "the full tracked set"
+
+PLAN.md:197 says the poll covers the watchlist, but tracked tickers are watchlist ∪ positions
+(§6, PLAN.md:250-267). Held-but-unwatched tickers are polled too. Say "tracked set" for accuracy.
+
+### L8. `last 20` chat rows can begin mid-conversation
+
+Both the LLM context window and `GET /api/chat/history` use the last 20 rows (PLAN.md:465, 648).
+When every turn writes a user + assistant row, the window can open on an assistant message with no
+preceding user turn. Harmless for chat display, but worth a note for the LLM prompt construction.
+
+### L9. Static-export frontend caveats are unstated
+
+§11 specifies `output: 'export'` (PLAN.md:783) but not the follow-on requirements: static export
+disables Next.js image optimisation (needs `images.unoptimized` if `next/image` is used) and API
+routes/ISR. Given §4 leaves frontend internals to the agent, one line in §11 would prevent a build
+surprise.
+
+### L10. Auto-execution has no prompt-injection note
+
+Trades execute with no confirmation (PLAN.md:676-683). Portfolio/watchlist text is fed into the
+LLM (PLAN.md:647), so a crafted ticker or chat message could in principle drive an unintended
+(`failed` or executed) trade. Stakes are zero (simulated money), so this is not a blocker — but a
+one-line acknowledgement in §9 that there is no confirmation gate *by design* would pre-empt the
+obvious reviewer question.
+
+### L11. Frontend unit test for the flash animation is optimistic
+
+§12 (PLAN.md:846) lists "Price flash animation triggers correctly on price changes" as a Vitest/RTL
+test. CSS transitions aren't observable in jsdom; the test can only assert class toggling / that
+the trigger fires on `direction != "flat"`. Reword to match what is actually testable.
+
+### L12. `.env.example` comments out four of the seven documented variables
+
+§5's comment says `.env.example` "lists every supported var" (PLAN.md:116), but
+`MARKET_DATA_SOURCE`, `DATABASE_PATH`, `FRONTEND_DIR`, and `PORT` are present only as commented
+lines (`.env.example:11-22`). They are listed, so this is cosmetic — but "lists every supported
+var" reads as if they are active.
 
 ---
 
-## 7. Suggested disposition
+## Verified accurate against the built code
 
-**Fix before implementation (contract-level):** 1.1, 1.2, 1.3, 1.4, 1.5.
-**Fix or explicitly defer, with a note in STATUS:** 1.6, 1.7, and §3 items 1–2.
-**Tidy-up (no behavior change):** §2, §4, §5, §6 of this review.
+These are the plan's factual claims about the existing market subsystem; all check out:
 
-None of these block starting `backend/app/main.py`, but 1.1–1.4 are exactly the kind of ambiguity
-that produces a plausible-looking implementation with a subtle wrong behavior, so they are worth
-settling in the plan first.
+- `httpx2` / `mcp>=2.3.0` are real dependencies and used as described (`pyproject.toml:11-12`,
+  `tapetide_client.py:17-19,129`). The claim that the MCP streamable-HTTP client is built on
+  `httpx2` matches the code.
+- The 20-symbol `get_batch_quotes` batch limit and the requested-vs-resolved symbol cache keying
+  (`tapetide_client.py:27,157-160`).
+- `previous_close` carry-forward-on-unsupplied semantics and cold-start default-to-first-price
+  (`cache.py:39-51`).
+- SSE version-counter change detection at ~500ms and full-map frames (`stream.py:51-85`).
+- `MarketDataError` on transport failure vs. `False` for "not found" (`interface.py:8-14,69-81`;
+  `tapetide_client.py:104-118`).
+- The `MARKET_DATA_SOURCE` override values and `tapetide`-without-key fast failure
+  (`factory.py:31-41`).
+- Seed prices (HDFCBANK 728.85, INFY 1161.20), the `NSE_SYMBOL_UNIVERSE` (includes `WIPRO`),
+  correlation groups, and the `dt ≈ 8.48e-8` figure (`seed_prices.py`, `simulator.py:44-47`).
+- The groq-skill model string `groq/openai/gpt-oss-120b` and dependency list
+  (`.claude/skills/groq-skill/SKILL.md:17-30`).
+
+One item the plan *omits* but the code implements: the "cache key is the requested ticker, not
+Tapetide's resolved symbol (corporate actions)" decision
+(`MARKET_DATA_SUMMARY.md:52`, `tapetide_client.py:157-160`). It is a real contract detail and is
+not in §6; consider adding it.
 
 ---
 
-## Rectification Pass — Verdicts & Actions
+## Open questions to confirm externally
 
-Implementing-agent pass (2026-10-19). Every observation was re-checked against the code and plan.
-Standing scope from the owner: **fix clear bugs in the delivered market code now, spec the rest in
-PLAN.md.** Code changes were validated: `uv run pytest` → **107 passed**, ruff clean.
+1. **Groq model availability.** `groq/openai/gpt-oss-120b` matches the groq-skill, but confirm the
+   model is still served (and its id unchanged) at implementation time; a model rename would make
+   every chat call 502.
+2. **Tapetide `prev_close` presence.** If a real quote omits `prev_close`, day-change silently
+   falls back to carry-forward/first-price (PLAN.md:283-309 assumes it is always returned). Confirm
+   against a live response.
+3. **`request.is_disconnected()` reliability** for SSE teardown (`stream.py:71`) — a known rough
+   edge in some ASGI servers; worth a smoke test rather than an assumption.
 
-| # | Sev | Valid? | Action |
-|---|-----|--------|--------|
-| 1.1 | BLK | Yes | **Code:** added `MarketDataError`; `validate_ticker` now returns bool only when Tapetide was reached and raises on transport failure. PLAN §6/§8: API maps it to `503`, never `400`. |
-| 1.2 | BLK | Yes | PLAN §6: disclaimer rule reworded to defer to §9's unconditional "every assistant turn while `data_source=="tapetide"`" — removes the §6-advisory vs §9-unconditional conflict. |
-| 1.3 | BLK | Yes | PLAN §7: seed rows inserted with distinct, increasing `added_at`; the UUID `id` tie-break is explicitly not relied on for order. |
-| 1.4 | BLK | Yes | PLAN §6: added the `_force_fallback` + `retry_after` cooldown latch (default 5 min) that suppresses the swap-back, fixing the every-minute sim↔Tapetide flap. |
-| 1.5 | HIGH | Yes | PLAN §5/§11: `PORT` is owned by the start scripts (`uvicorn --port`), not read by `main.py`; `DATABASE_PATH`/`FRONTEND_DIR` are read by `main.py`. |
-| 1.6 | HIGH | Yes | PLAN §6 SSE: reworded to "pushes on every cache write (version bump); frames are not de-duplicated." |
-| 1.7 | HIGH | Yes | PLAN §11: `LLM_MOCK=true` skips the key check entirely; placeholder treated as "not filled"; warn, don't fail. |
-| 2.1 | gap | Yes | PLAN §8: un-priced held position → `current_price: null`, fall back to cost basis (`market_value=qty*avg_cost`, pnl/return 0). |
-| 2.2 | gap | Yes | PLAN §6/§8: `market_data_healthy` window set to ~10s (> 2s Tapetide cadence). |
-| 2.3 | gap | Yes | PLAN §9: stored `chat_messages.content` is the final, post-disclaimer text. |
-| 2.4 | gap | Yes | PLAN §8: duplicate watchlist add short-circuits **before** validation (spends no Tapetide call). |
-| 2.5 | gap | Yes | PLAN §6: documented the intended day-change % jump when sim→Tapetide replaces the baseline at market open. |
-| 2.6 | gap | Yes | PLAN §10: flash trigger defined as `direction != "flat"`, not per-frame. |
-| 2.7 | gap | Yes | PLAN §9: `quantity` is a number, fractional allowed; the `10` is illustrative. |
-| 2.8 | gap | Yes | `.env.example` + README env table now list `MARKET_DATA_SOURCE`, `DATABASE_PATH`, `FRONTEND_DIR`, `PORT`. |
-| 2.9 | gap | Yes | PLAN §7: epsilon policy (`|qty| < 1e-9` ≈ 0) for sell-to-zero and insufficient-shares. |
-| 2.10 | gap | Yes | PLAN §10: watchlist panel membership comes from `GET /api/watchlist`; SSE supplies prices only. |
-| 3.1 | code | Yes | **Code:** naive Tapetide `updated_at` now parsed as IST (`_parse_timestamp`), with a test. |
-| 3.2 | code | Yes | **Code:** Tapetide MCP calls serialized through an `asyncio.Lock` shared by poll + validate. |
-| 3.3 | code | Yes | Degraded-mode mechanism now specified (1.4); implementation remains `main.py` scope in STATUS. |
-| 4.1 | simplify | Yes | PLAN §6: collapsed the two-baseline prose + correction into one statement. |
-| 4.2 | simplify | Author | Two-`db` split / `user_id` scaffolding kept (deliberate, §13). Path footgun is already guarded (§11). Flagged for your call below. |
-| 4.3 | simplify | Author | Live handover kept (deliberate, §13); its failure mode (1.4) is now fixed rather than the feature dropped. |
-| 4.4 | simplify | Ack | Duplicated scope sentences (§10/§13) left in place — the inline context helps the frontend agent; §13 remains the canonical home. No change. |
-| 4.5 | simplify | Yes | Covered by 1.5 (PORT/paths framing). |
-| 6a | nit | Yes | PLAN §11: corrected "Next.js `output:'export'` default" wording. |
-| 6b | nit | Yes | PLAN §4 tree now lists `.env.example` and `.finally.pid`. |
-| 6c | nit | Yes | PLAN §8: position field renamed `change_percent` → `return_percent` to disambiguate. |
-| 6d | nit | Yes | PLAN §9: "all all-caps" reworded to "every all-caps token." |
-| 6e | nit | Yes | PLAN §12: SSE-resilience E2E softened to unit-level reconnect + "prices keep updating." |
-| 6f | nit | Yes | PLAN §2: "Review recent trades" added to the user-capability list to match §10. |
+---
 
-**Questions for the author (§5):** 1→1.1 (raises), 2→1.4 (latch on manager, 5-min cooldown),
-3→1.3 (distinct `added_at`), 4→2.1 (cost-basis fallback), 5→2.3 (post-disclaimer), 6→§12 (E2E
-uses `LLM_MOCK`, so 1.7's check is skipped), 7→2.5 (jump is intended). All answered by the edits
-above.
+## Disposition (what was processed)
 
-**Finding 4.2 — resolved (owner, 2026-10-19): keep as-is.** The `backend/db/` ↔ top-level `db/`
-split and the `user_id` scaffolding both stay. Recorded as a standing decision in PLAN.md §13 so
-it is not re-raised by a future review.
+Verdict and action taken per finding. All changes landed in `PLAN.md`; no code was changed (the
+findings are about the spec, and the market subsystem's facts all check out).
+
+| # | Verdict | Change made |
+|---|---------|-------------|
+| H1 | Valid | Rewrote the `positions` note: realized P&L is **not tracked** (no cost basis stored); how to add it later. |
+| H2 | Valid | §9/§10: frontend refetches `GET /api/portfolio` + `/api/watchlist` after any chat turn with non-empty `actions`; added matching E2E assertion (§12). |
+| M1 | Valid | §5: `load_dotenv(REPO_ROOT / ".env")` with rationale, not bare `load_dotenv()`. |
+| M2 | Valid | §6: degraded-mode re-attributed across `TapetideDataSource` + manager (not just `main.py`); "N failures" now counts a crashed poll task too. |
+| M3 | Valid (partial) | §6: named the interval constant `TAPETIDE_POLL_SECONDS` (default 2) + a one-time startup warning. No budget throttle built — left to owner by design. |
+| M4 | Valid | §13: dropped the stale "see REVIEW.md finding 4.2" cross-reference. |
+| M5 | Valid | §10 header: added a "LIVE (NSE)" vs "SIMULATED" data-source badge from `/api/health`. |
+| M6 | Valid | §10: specified ~5s `/api/health` poll cadence and stale-if-older-than-~10s rule. |
+| M7 | Valid | §11/§12: PID file overridable via `FINALLY_PID_FILE`; E2E harness uses its own. |
+| M8 | Valid (partial) | Replaced the duplicated `dt` figure with "see `simulator.py`" (§13); seed prices already point to the source file. Other constants left inline as contract values. |
+| L1 | Valid | §8: fixed the `GET /api/portfolio` example so the numbers add up. |
+| L2 | Valid | §8: noted `direction` is tick-over-tick; colour the daily cell by `day_change`. |
+| L3 | Valid | §8: watchlist fields described as a **subset** of `to_dict()`. |
+| L4 | Valid | §8: `removed` now reflects the actual delete (false if absent). |
+| L5 | Valid | §10: one-point-per-second rule scoped to the SSE-fed charts; P&L chart excluded. |
+| L6 | Valid | §9: noted `active_source_name` can be `"none"` pre-start but is never surfaced (manager starts before serving). |
+| L7 | Valid | §6: "full watchlist" → "full tracked set (watchlist ∪ positions)". |
+| L8 | Valid | §9: noted the 20-row window may open on an assistant row; prompt build must tolerate it. |
+| L9 | Valid | §11: static-export caveats (`images.unoptimized`, no API routes/ISR). |
+| L10 | Valid | §9: one-line "no confirmation gate by design" / prompt-injection acknowledgement. |
+| L11 | Valid | §12: reworded the flash test to class-toggle assertion (jsdom can't observe CSS transitions). |
+| L12 | Valid (cosmetic) | §4: clarified `.env.example` lists optional vars as commented-out lines. |
+| Omitted detail | Valid | §6: added the "cache keyed by requested ticker, not resolved symbol" contract note. |
+| OQ1 (Groq model) | Valid, no spec change | Owner to confirm `groq/openai/gpt-oss-120b` is still served at build time. |
+| OQ2 (`prev_close`) | Valid, already handled | If absent, §6 carry-forward/first-price fallback applies — no defect; confirm against a live response. |
+| OQ3 (`is_disconnected`) | Valid, no spec change | Smoke-test at implementation; not a plan change. |
+| Verified-accurate list | Accepted | No action — confirms the plan matches the built market code. |
+
+Also compressed PLAN.md: trimmed redundant prose in §5 (supervisor), §6 (SEBI text kept as single
+source of truth, degraded-mode intro), §8 (chat-502 bullet), §9 (mock extraction), and §13 (`dt`
+derivation) without dropping any contract detail.
