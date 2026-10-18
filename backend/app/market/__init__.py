@@ -4,7 +4,7 @@ Public API:
     PriceUpdate         - Immutable price snapshot dataclass
     PriceCache          - Thread-safe in-memory price store
     MarketDataSource    - Abstract interface for data providers
-    create_market_data_source - Factory that selects simulator or Massive
+    create_market_data_source - Factory that selects simulator or Tapetide
     create_stream_router - FastAPI router factory for SSE endpoint
 """
 

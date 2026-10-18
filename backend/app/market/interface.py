@@ -55,3 +55,12 @@ class MarketDataSource(ABC):
     @abstractmethod
     def get_tickers(self) -> list[str]:
         """Return the current list of actively tracked tickers."""
+
+    @abstractmethod
+    async def validate_ticker(self, ticker: str) -> bool:
+        """Return True if `ticker` is a real, recognized symbol for this source.
+
+        Used before adding a ticker to the watchlist, so an unrecognized
+        symbol can be rejected with a user-facing error instead of silently
+        never receiving a price.
+        """

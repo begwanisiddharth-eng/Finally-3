@@ -27,9 +27,9 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
   - `remove(ticker)`
   - `version` property — monotonic counter, increments on every update (for SSE change detection)
 
-- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`.
+- **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `TapetideDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`. Also exposes `validate_ticker(ticker) -> bool`.
 
-- **`create_market_data_source(cache)`** — Factory. Returns `MassiveDataSource` if `MASSIVE_API_KEY` is set, otherwise `SimulatorDataSource`.
+- **`create_market_data_source(cache)`** — Factory. Returns `TapetideDataSource` if `TAPETIDE_API_KEY` is set AND it is currently NSE trading hours (9:15am-3:30pm IST, Mon-Fri; see `nse_hours.is_nse_trading_hours`), otherwise `SimulatorDataSource`.
 
 ### SSE Streaming
 
@@ -42,7 +42,7 @@ router = create_stream_router(price_cache)  # Returns FastAPI APIRouter
 
 ### Seed Data
 
-Default tickers: AAPL, GOOGL, MSFT, AMZN, TSLA, NVDA, META, JPM, V, NFLX. Seed prices and per-ticker volatility/drift params are in `app/market/seed_prices.py`.
+Default tickers (NSE): HEROMOTOCO, BEL, PIDILITIND, LTF, HDFCBANK, INFY, RELIANCE, TCS, ICICIBANK, TATAMOTORS. Seed prices and per-ticker volatility/drift params are in `app/market/seed_prices.py`, which also holds `NSE_SYMBOL_UNIVERSE`, the curated symbol list the simulator validates watchlist additions against.
 
 ## Running Tests
 

@@ -22,9 +22,9 @@ class TestGBMSimulator:
 
     def test_initial_prices_match_seeds(self):
         """Test that initial prices match seed prices."""
-        sim = GBMSimulator(tickers=["AAPL"])
+        sim = GBMSimulator(tickers=["RELIANCE"])
         # Before any step, price should be the seed price
-        assert sim.get_price("AAPL") == SEED_PRICES["AAPL"]
+        assert sim.get_price("RELIANCE") == SEED_PRICES["RELIANCE"]
 
     def test_add_ticker(self):
         """Test adding a ticker dynamically."""
@@ -94,26 +94,29 @@ class TestGBMSimulator:
         sim = GBMSimulator(tickers=["AAPL"])
         assert sim.get_price("UNKNOWN") is None
 
-    def test_pairwise_correlation_tech_stocks(self):
-        """Test that tech stocks have high correlation."""
-        corr = GBMSimulator._pairwise_correlation("AAPL", "GOOGL")
+    def test_pairwise_correlation_it_stocks(self):
+        """Test that IT-sector stocks have high correlation."""
+        corr = GBMSimulator._pairwise_correlation("INFY", "TCS")
         assert corr == 0.6
 
-    def test_pairwise_correlation_finance_stocks(self):
-        """Test that finance stocks have moderate correlation."""
-        corr = GBMSimulator._pairwise_correlation("JPM", "V")
-        assert corr == 0.5
+    def test_pairwise_correlation_banking_stocks(self):
+        """Test that banking-sector stocks have high correlation."""
+        corr = GBMSimulator._pairwise_correlation("HDFCBANK", "ICICIBANK")
+        assert corr == 0.6
 
-    def test_pairwise_correlation_tsla(self):
-        """Test that TSLA has lower correlation with everything."""
-        corr = GBMSimulator._pairwise_correlation("TSLA", "AAPL")
-        assert corr == 0.3
-        corr = GBMSimulator._pairwise_correlation("TSLA", "JPM")
-        assert corr == 0.3
+    def test_pairwise_correlation_auto_stocks(self):
+        """Test that auto-sector stocks have high correlation."""
+        corr = GBMSimulator._pairwise_correlation("HEROMOTOCO", "TATAMOTORS")
+        assert corr == 0.6
 
     def test_pairwise_correlation_cross_sector(self):
         """Test cross-sector correlation."""
-        corr = GBMSimulator._pairwise_correlation("AAPL", "JPM")
+        corr = GBMSimulator._pairwise_correlation("INFY", "HDFCBANK")
+        assert corr == 0.3
+
+    def test_pairwise_correlation_unknown_tickers(self):
+        """Test that tickers outside any group default to cross-group correlation."""
+        corr = GBMSimulator._pairwise_correlation("ZZZZ", "YYYY")
         assert corr == 0.3
 
     def test_default_dt_is_reasonable(self):

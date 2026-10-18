@@ -7,7 +7,7 @@ Built entirely by coding agents as a capstone project for an agentic AI coding c
 ## Features
 
 - **Live price streaming** via SSE with green/red flash animations
-- **Simulated portfolio** — $10k virtual cash, market orders, instant fills
+- **Simulated portfolio** — Rs 10 lakh virtual cash, market orders, instant fills
 - **Portfolio visualizations** — heatmap (treemap), P&L chart, positions table
 - **AI chat assistant** — analyzes holdings, suggests and auto-executes trades
 - **Watchlist management** — track tickers manually or via AI
@@ -15,24 +15,24 @@ Built entirely by coding agents as a capstone project for an agentic AI coding c
 
 ## Architecture
 
-Single Docker container serving everything on port 8000:
+Single local process serving everything on port 8000, no Docker:
 
 - **Frontend**: Next.js (static export) with TypeScript and Tailwind CSS
 - **Backend**: FastAPI (Python/uv) with SSE streaming
 - **Database**: SQLite with lazy initialization
-- **AI**: LiteLLM → OpenRouter (Cerebras inference) with structured outputs
-- **Market data**: Built-in GBM simulator (default) or Massive API (optional)
+- **AI**: LiteLLM → Groq (`groq/openai/gpt-oss-120b`) with structured outputs
+- **Market data**: Built-in GBM simulator (default) or Tapetide MCP for real NSE data during trading hours (optional)
 
 ## Quick Start
 
 ```bash
 # Clone and configure
 cp .env.example .env
-# Add your OPENROUTER_API_KEY to .env
+# Add your GROQ_API_KEY to .env
 
-# Run with Docker
-docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+# Build the frontend and launch the backend
+./scripts/start_mac.sh      # macOS/Linux
+./scripts/start_windows.ps1 # Windows
 
 # Open http://localhost:8000
 ```
@@ -41,8 +41,8 @@ docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key for AI chat |
-| `MASSIVE_API_KEY` | No | Massive (Polygon.io) key for real market data; omit to use simulator |
+| `GROQ_API_KEY` | Yes | Groq API key for AI chat |
+| `TAPETIDE_API_KEY` | No | Tapetide MCP bearer token for real NSE market data; omit to use simulator |
 | `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
 
 ## Project Structure

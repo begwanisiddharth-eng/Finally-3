@@ -15,11 +15,10 @@ from .seed_prices import (
     CORRELATION_GROUPS,
     CROSS_GROUP_CORR,
     DEFAULT_PARAMS,
-    INTRA_FINANCE_CORR,
-    INTRA_TECH_CORR,
+    INTRA_GROUP_CORR,
+    NSE_SYMBOL_UNIVERSE,
     SEED_PRICES,
     TICKER_PARAMS,
-    TSLA_CORR,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,9 +51,11 @@ class GBMSimulator:
         tickers: list[str],
         dt: float = DEFAULT_DT,
         event_probability: float = 0.001,
+        seed_overrides: dict[str, float] | None = None,
     ) -> None:
         self._dt = dt
         self._event_prob = event_probability
+        self._seed_overrides = seed_overrides or {}
 
         # Per-ticker state
         self._tickers: list[str] = []
@@ -117,11 +118,15 @@ class GBMSimulator:
 
         return result
 
-    def add_ticker(self, ticker: str) -> None:
-        """Add a ticker to the simulation. Rebuilds the correlation matrix."""
+    def add_ticker(self, ticker: str, seed_price: float | None = None) -> None:
+        """Add a ticker to the simulation. Rebuilds the correlation matrix.
+
+        If `seed_price` is given (e.g. the last known real price for this
+        ticker), it is used as the starting price instead of SEED_PRICES.
+        """
         if ticker in self._prices:
             return
-        self._add_ticker_internal(ticker)
+        self._add_ticker_internal(ticker, seed_price=seed_price)
         self._rebuild_cholesky()
 
     def remove_ticker(self, ticker: str) -> None:
@@ -143,12 +148,23 @@ class GBMSimulator:
 
     # --- Internals ---
 
-    def _add_ticker_internal(self, ticker: str) -> None:
-        """Add a ticker without rebuilding Cholesky (for batch initialization)."""
+    def _add_ticker_internal(self, ticker: str, seed_price: float | None = None) -> None:
+        """Add a ticker without rebuilding Cholesky (for batch initialization).
+
+        Seed price priority: explicit `seed_price` arg > constructor
+        `seed_overrides` (last known real price) > static SEED_PRICES >
+        random fallback for an unrecognized ticker.
+        """
         if ticker in self._prices:
             return
         self._tickers.append(ticker)
-        self._prices[ticker] = SEED_PRICES.get(ticker, random.uniform(50.0, 300.0))
+        self._prices[ticker] = (
+            seed_price
+            if seed_price is not None
+            else self._seed_overrides.get(
+                ticker, SEED_PRICES.get(ticker, random.uniform(50.0, 300.0))
+            )
+        )
         self._params[ticker] = TICKER_PARAMS.get(ticker, dict(DEFAULT_PARAMS))
 
     def _rebuild_cholesky(self) -> None:
@@ -176,23 +192,12 @@ class GBMSimulator:
         """Determine correlation between two tickers based on sector grouping.
 
         Correlation structure:
-          - Same tech sector:   0.6
-          - Same finance sector: 0.5
-          - TSLA with anything: 0.3 (it does its own thing)
-          - Cross-sector:       0.3
-          - Unknown tickers:    0.3
+          - Same sector group (banking/it/auto): 0.6
+          - Cross-sector or unknown tickers:      0.3
         """
-        tech = CORRELATION_GROUPS["tech"]
-        finance = CORRELATION_GROUPS["finance"]
-
-        # TSLA is in tech set but behaves independently
-        if t1 == "TSLA" or t2 == "TSLA":
-            return TSLA_CORR
-
-        if t1 in tech and t2 in tech:
-            return INTRA_TECH_CORR
-        if t1 in finance and t2 in finance:
-            return INTRA_FINANCE_CORR
+        for group in CORRELATION_GROUPS.values():
+            if t1 in group and t2 in group:
+                return INTRA_GROUP_CORR
 
         return CROSS_GROUP_CORR
 
@@ -217,9 +222,18 @@ class SimulatorDataSource(MarketDataSource):
         self._task: asyncio.Task | None = None
 
     async def start(self, tickers: list[str]) -> None:
+        # If the cache already holds a price for a ticker (e.g. the last
+        # real quote seen from Tapetide before trading hours ended), seed
+        # the simulator from that instead of the static SEED_PRICES table.
+        seed_overrides = {
+            ticker: price
+            for ticker in tickers
+            if (price := self._cache.get_price(ticker)) is not None
+        }
         self._sim = GBMSimulator(
             tickers=tickers,
             event_probability=self._event_prob,
+            seed_overrides=seed_overrides,
         )
         # Seed the cache with initial prices so SSE has data immediately
         for ticker in tickers:
@@ -241,12 +255,17 @@ class SimulatorDataSource(MarketDataSource):
 
     async def add_ticker(self, ticker: str) -> None:
         if self._sim:
-            self._sim.add_ticker(ticker)
+            seed_price = self._cache.get_price(ticker)
+            self._sim.add_ticker(ticker, seed_price=seed_price)
             # Seed cache immediately so the ticker has a price right away
             price = self._sim.get_price(ticker)
             if price is not None:
                 self._cache.update(ticker=ticker, price=price)
             logger.info("Simulator: added ticker %s", ticker)
+
+    async def validate_ticker(self, ticker: str) -> bool:
+        """Check `ticker` against the curated NSE symbol universe."""
+        return ticker.upper() in NSE_SYMBOL_UNIVERSE
 
     async def remove_ticker(self, ticker: str) -> None:
         if self._sim:

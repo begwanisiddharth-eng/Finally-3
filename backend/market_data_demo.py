@@ -27,7 +27,10 @@ from app.market.simulator import SimulatorDataSource
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 # Ordered ticker list matching the default watchlist
-TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "NFLX"]
+TICKERS = [
+    "HEROMOTOCO", "BEL", "PIDILITIND", "LTF", "HDFCBANK",
+    "INFY", "RELIANCE", "TCS", "ICICIBANK", "TATAMOTORS",
+]
 
 DURATION = 60  # seconds
 
@@ -89,7 +92,7 @@ def build_table(
             color = "bright_black"
             arrow = "[bright_black]\u2500[/]"
 
-        price_str = f"[{color}]${format_price(update.price)}[/]"
+        price_str = f"[{color}]Rs {format_price(update.price)}[/]"
         change_str = f"[{color}]{update.change:+.2f}[/]"
         pct_str = f"[{color}]{update.change_percent:+.2f}%[/]"
 
@@ -195,8 +198,8 @@ def print_summary(cache: PriceCache) -> None:
 
         table.add_row(
             ticker,
-            f"${format_price(seed)}",
-            f"[{color}]${format_price(final)}[/]",
+            f"Rs {format_price(seed)}",
+            f"[{color}]Rs {format_price(final)}[/]",
             f"[{color}]{session_change:+.2f}%[/]",
         )
 

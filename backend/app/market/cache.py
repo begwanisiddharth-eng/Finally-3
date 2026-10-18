@@ -11,7 +11,7 @@ from .models import PriceUpdate
 class PriceCache:
     """Thread-safe in-memory cache of the latest price for each ticker.
 
-    Writers: SimulatorDataSource or MassiveDataSource (one at a time).
+    Writers: SimulatorDataSource or TapetideDataSource (one at a time).
     Readers: SSE streaming endpoint, portfolio valuation, trade execution.
     """
 
