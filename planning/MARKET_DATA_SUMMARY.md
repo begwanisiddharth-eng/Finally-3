@@ -98,7 +98,9 @@ update = cache.get("HDFCBANK")      # PriceUpdate or None
 price = cache.get_price("HDFCBANK") # float or None
 all_prices = cache.get_all()        # dict[str, PriceUpdate]
 
-# Dynamic watchlist (validate before adding)
+# Dynamic watchlist (validate before adding). A successful validate_ticker
+# also seeds the cache (Tapetide writes the quote it fetched; the simulator
+# seeds on add_ticker), so an immediate trade on the new ticker has a price.
 if await manager.validate_ticker("WIPRO"):
     await manager.add_ticker("WIPRO")
 await manager.remove_ticker("TCS")

@@ -243,16 +243,21 @@ supervisor still considers Tapetide "active"). The intended behavior instead:
 - **Expose data-source health.** `GET /api/health` reports `data_source` and a
   `market_data_healthy` boolean — true when the active source has written to the cache within the
   last **~10s** (comfortably above Tapetide's 2s poll cadence, so a healthy feed never reads as
-  stale) — so a frozen feed is detectable rather than silently stale (§8, §10).
+  stale) — so a frozen feed is detectable rather than silently stale (§8, §10). A brief
+  `market_data_healthy: false` in the first moments of a cold start is acceptable, not a bug: the
+  simulator seeds the cache in `start()` and Tapetide does an immediate first poll on connect, so
+  the window is sub-second to a couple of seconds, and the frontend already renders a "stale" badge
+  (§10) for exactly this transient.
 - **Distinguish transport failure from "symbol not found"** when validating a ticker (see "Ticker
   Validation" above): a failed connection must not be reported to the user as an invalid symbol.
 
 Implementation of this degraded-mode policy is deferred until the backend app is wired, but it is
-**not purely a `main.py` task**: the failure counter and crashed-task detection live in
-`TapetideDataSource`, the `_force_fallback` + `retry_after` latch lives on `MarketDataManager`
-(both currently marked complete), and `main.py` only maps `MarketDataError` to a `503` on the
-validation path and wires the manager. This section is the contract those pieces must satisfy.
-Covered by a unit test (§12).
+**not purely a `main.py` task**: the failure counter and crashed-task detection belong in
+`TapetideDataSource`, the `_force_fallback` + `retry_after` latch belongs on `MarketDataManager`,
+and `main.py` only maps `MarketDataError` to a `503` on the validation path and wires the manager.
+All three are **still to build** — see `planning/STATUS.md`; neither the counter nor the latch
+exists in the current market subsystem yet. This section is the contract those pieces must satisfy
+once written. Covered by a unit test (§12).
 
 ### Tracked Tickers = Watchlist ∪ Held Positions
 
@@ -276,7 +281,7 @@ mirroring the watchlist-removal rule.) Covered by a unit test (§12).
 ### Ticker Validation
 
 - Adding a ticker (manually via `POST /api/watchlist` or via the AI's `watchlist_changes`) is validated against the active market data source via `MarketDataSource.validate_ticker(ticker)`:
-  - **Tapetide active**: a single-symbol `get_batch_quotes` call is the validation signal — the response's `found: false` field means the ticker doesn't exist. No separate symbol-lookup tool is needed. Two caveats the implementation honors: (1) this validation call shares the one MCP `Client` with the background poller, so all Tapetide tool calls are serialized through an `asyncio.Lock` rather than issued concurrently; (2) each add spends one extra call against the 400/day budget, so the AI should not probe speculatively — and `POST /api/watchlist` short-circuits a duplicate add *before* validating (§8), so re-adding a watched ticker spends nothing. A **transport failure** (no connection, timeout) is distinguished from a genuine `found: false`: `validate_ticker` returns a bool only when Tapetide was actually reached, and raises `MarketDataError` otherwise. The API maps that exception to a `503` ("couldn't check right now"), never a `400` "No stock with ticker XYZ exists" (see "Tapetide Failure / Degraded Mode" below).
+  - **Tapetide active**: a single-symbol `get_batch_quotes` call is the validation signal — the response's `found: false` field means the ticker doesn't exist. No separate symbol-lookup tool is needed. Two caveats the implementation honors: (1) this validation call shares the one MCP `Client` with the background poller, so all Tapetide tool calls are serialized through an `asyncio.Lock` rather than issued concurrently; (2) each add spends one extra call against the 400/day budget, so the AI should not probe speculatively — and `POST /api/watchlist` short-circuits a duplicate add *before* validating (§8), so re-adding a watched ticker spends nothing. A **transport failure** (no connection, timeout) is distinguished from a genuine `found: false`: `validate_ticker` returns a bool only when Tapetide was actually reached, and raises `MarketDataError` otherwise. The API maps that exception to a `503` ("couldn't check right now"), never a `400` "No stock with ticker XYZ exists" (see "Tapetide Failure / Degraded Mode" below). On a successful validation `validate_ticker` **writes the quote it just fetched into the cache** (it is already in hand, so this costs no extra call), so a watchlist add immediately followed by a trade on the same ticker — the one-turn "add X and buy 10" flow (§9) — has a fill price without waiting for the next ~2s poll. (The simulator seeds the cache on `add_ticker` for the same reason.)
   - **Simulator active**: the simulator has no real backing universe (it would otherwise seed *any* string with a random price), so validation instead checks a curated, static list of recognized NSE symbols (`NSE_SYMBOL_UNIVERSE` in `backend/app/market/seed_prices.py`).
 - If the ticker is not recognized, the add is rejected and no watchlist row is created. The API returns an error the frontend surfaces as a flashed message to the user (e.g. "No stock with ticker XYZ exists"); when the AI attempts this via `watchlist_changes`, the same error is returned in the chat response so the LLM can relay it to the user.
 
@@ -455,6 +460,14 @@ is rejected (not auto-added to the watchlist) with: *"Only tickers in your watch
 your portfolio can be traded. Add `<TICKER>` to your watchlist first."* This applies identically
 to the manual trade bar and to AI-initiated trades in chat — the LLM relays the same message back
 to the user rather than silently adding the ticker itself.
+
+**No cached price yet.** Tracking a ticker and having a price for it are distinct (§6): a
+just-added ticker can be tracked but still have no cache entry for a tick or two. The fill price is
+the latest cache price at execution, so a trade on a tracked-but-unpriced ticker is rejected with
+`400` *"No price available for `<TICKER>` yet — try again in a moment."* rather than filling at
+`null` or `0`. In practice this window is near-zero: the simulator seeds the cache on `add_ticker`
+and Tapetide's `validate_ticker` seeds it on a successful add (§6), so the one-turn "add X and buy
+10" flow (§9) has a price by the time the buy runs.
 
 ### Watchlist
 | Method | Path | Description |
@@ -651,7 +664,7 @@ There is a GROQ_API_KEY in the .env file in the project root (the backend loads 
 
 When the user sends a chat message, the backend:
 
-1. Loads the user's current portfolio context: cash, positions with P&L, watchlist with live prices, total portfolio value, and `data_source` (`"tapetide"` or `"simulator"` — `MarketDataManager.active_source_name`, §6). The LLM needs this last field to decide whether the SEBI disclaimer applies (below); without it, there is no way for the model to tell which source the prices it's reasoning about came from. (`active_source_name` also returns `"none"` before the manager is started, but the manager starts in lifespan step 3 — before the app serves requests (§7) — so `/api/chat` and `/api/health` never observe `"none"`.)
+1. Loads the user's current portfolio context: cash, positions with P&L, watchlist with live prices, total portfolio value, and `data_source` (`"tapetide"` or `"simulator"` — `MarketDataManager.active_source_name`, §6). The LLM is told `data_source` so its analysis is **honest about whether the prices are real** (e.g. caveating a simulated session) — *not* to decide whether to emit the SEBI disclaimer: that is appended deterministically server-side and the model is told not to add it (below). (`active_source_name` also returns `"none"` before the manager is started, but the manager starts in lifespan step 3 — before the app serves requests (§7) — so `/api/chat` and `/api/health` never observe `"none"`.)
 2. Loads the last 20 rows of conversation history from the `chat_messages` table (same window `GET /api/chat/history`, §8, exposes to the frontend — one number, stated once, used by both). The window can open on an assistant row with no preceding user row; prompt construction must tolerate that rather than assume strict user/assistant pairing.
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
 4. Calls the LLM via LiteLLM → Groq, requesting structured output, using the groq-skill
@@ -766,7 +779,7 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 ### Technical Notes
 
 - Use `EventSource` for SSE connection to `/api/stream/prices`
-- Two charting libraries, each used for what it's good at: **Lightweight Charts** for the time-series charts (sparklines, main chart, P&L chart) — canvas-based, built for financial time series; **Recharts' `Treemap`** component (built on `d3-hierarchy` internally) for the portfolio heatmap (§2), since Lightweight Charts has no treemap primitive. This is a deliberate two-library split, not an either/or choice left to the Frontend Engineer.
+- **One charting library: Lightweight Charts** for the time-series charts (sparklines, main chart, P&L chart) — canvas-based, built for financial time series. The portfolio heatmap (§2) is **rendered directly** with styled DOM/SVG boxes, not a charting library: each position is an absolutely-positioned (or flex) rectangle sized by its normalized weight and tinted by P&L. A positions heatmap is a handful of rectangles with a simple slice layout, so pulling in a second charting library (e.g. Recharts' `Treemap`) just for it is unwarranted weight — dropped in favor of a small self-rendered component. See §13.
 - Lightweight Charts requires **strictly ascending, unique** time values, but two SSE updates can carry the same Unix second. The frontend must aggregate the live buffer to **one point per second (last price wins)** — or map to a monotonically increasing sequence — before feeding the SSE-fed charts (sparkline and main chart); otherwise the library throws or silently drops points. (The P&L chart is sourced from `portfolio_snapshots` at a 30s cadence — already strictly ascending and unique — so it is not on the SSE buffer and needs no such aggregation.) The accumulated buffer is page-lifetime and unbounded, so cap it (e.g. keep the last N points) if long sessions matter.
 - Price flash effect: flash only when the price actually moved — trigger on `direction != "flat"` (equivalently `change != 0`), **not** on every SSE frame (frames repeat even when nothing changed, §6). On a move, briefly apply a CSS class with a ~250ms background color transition, then remove it (§2 — shorter than the ~500ms simulator tick so flashes don't overlap). As a result, flashes are naturally sparse for low-priced tickers whose 2-dp price rarely changes per tick (§13), which is expected.
 - All API calls go to the same origin (`/api/*`) — no CORS configuration needed
@@ -917,3 +930,12 @@ it goes stale; a decision worth keeping belongs in the plan, not behind an exter
   and 2-dp cache rounding, many 500ms steps round to no change for lower-priced tickers, so routine
   flashes are sparse and the random-event mechanism (2-5% moves) supplies most of the drama.
   Accepted as-is.
+- **One charting library; the heatmap is self-rendered (§10)** — Lightweight Charts covers the
+  time series; the portfolio treemap is a few DOM/SVG rectangles sized by weight and tinted by P&L,
+  rendered directly rather than pulling in a second charting library (Recharts) for one component.
+  Settled from the earlier "deliberate two-library split" after a simplicity review.
+- **A trade needs a cached price, not just a tracked ticker (§6, §8)** — tracking and pricing are
+  distinct, so `validate_ticker` (Tapetide) seeds the cache from the quote it already fetched and
+  the simulator seeds on `add_ticker`, making the one-turn "add X and buy 10" flow reliable. A
+  trade on a tracked-but-still-unpriced ticker is rejected with a clear `400` rather than filling
+  at `null`/`0`.

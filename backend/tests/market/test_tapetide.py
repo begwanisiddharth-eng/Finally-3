@@ -176,12 +176,24 @@ class TestTapetideDataSource:
 
         assert await source.validate_ticker("reliance") is True
 
+    async def test_validate_ticker_found_seeds_cache(self):
+        """A successful validation writes the fetched quote to the cache, so an
+        immediately following trade (one-turn add + buy, §9) has a fill price."""
+        cache = PriceCache()
+        source = TapetideDataSource(api_key="test-key", price_cache=cache)
+        source._client = _mock_client([_quote("RELIANCE", 1211.20, "2026-10-16T10:29:44+00:00")])
+
+        await source.validate_ticker("reliance")
+
+        assert cache.get_price("RELIANCE") == 1211.20
+
     async def test_validate_ticker_not_found(self):
         cache = PriceCache()
         source = TapetideDataSource(api_key="test-key", price_cache=cache)
         source._client = _mock_client([_quote("NOTAREALTICKER", 0, "", found=False)])
 
         assert await source.validate_ticker("NOTAREALTICKER") is False
+        assert cache.get_price("NOTAREALTICKER") is None
 
     async def test_validate_ticker_without_connection_raises(self):
         cache = PriceCache()

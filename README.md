@@ -1,27 +1,36 @@
 # FinAlly — AI Trading Workstation
 
-A visually stunning AI-powered trading workstation that streams live market data, simulates portfolio trading, and integrates an LLM chat assistant that can analyze positions and execute trades via natural language.
+An AI-powered trading workstation that streams live market data, simulates portfolio trading with Rs 10 lakh of virtual cash, and includes an LLM chat assistant that can analyze positions and execute trades via natural language.
 
 Built entirely by coding agents as a capstone project for an agentic AI coding course.
+
+## Status
+
+Work in progress. See [`planning/STATUS.md`](planning/STATUS.md) for what is built.
+
+- **Done**: market data subsystem (simulator, Tapetide client, live handover) and its tests, in `backend/`
+- **To build**: API and database, LLM chat, frontend, start/stop scripts, E2E tests
+
+The Quick Start below describes the target experience and will work once the remaining pieces land.
 
 ## Features
 
 - **Live price streaming** via SSE with green/red flash animations
-- **Simulated portfolio** — Rs 10 lakh virtual cash, market orders, instant fills
-- **Portfolio visualizations** — heatmap (treemap), P&L chart, positions table
+- **Simulated portfolio** — market orders, instant fills, no fees
+- **Portfolio visualizations** — heatmap, P&L chart, positions table
 - **AI chat assistant** — analyzes holdings, suggests and auto-executes trades
-- **Watchlist management** — track tickers manually or via AI
+- **Watchlist management** — manually or via AI
 - **Dark terminal aesthetic** — Bloomberg-inspired, data-dense layout
 
 ## Architecture
 
 Single local process serving everything on port 8000, no Docker:
 
-- **Frontend**: Next.js (static export) with TypeScript and Tailwind CSS
-- **Backend**: FastAPI (Python/uv) with SSE streaming
-- **Database**: SQLite with lazy initialization
+- **Frontend**: Next.js (static export), TypeScript, Tailwind CSS
+- **Backend**: FastAPI (Python, managed with `uv`), SSE streaming
+- **Database**: SQLite (`db/finally.db`)
 - **AI**: LiteLLM → Groq (`groq/openai/gpt-oss-120b`) with structured outputs
-- **Market data**: Built-in GBM simulator (default) or Tapetide MCP for real NSE data during trading hours (optional)
+- **Market data**: built-in GBM simulator by default; real NSE data via the Tapetide MCP server during trading hours if `TAPETIDE_API_KEY` is set
 
 ## Prerequisites
 
@@ -32,39 +41,48 @@ Single local process serving everything on port 8000, no Docker:
 ## Quick Start
 
 ```bash
-# Clone and configure
-cp .env.example .env
-# Add your GROQ_API_KEY to .env
-
-# Build the frontend and launch the backend
-./scripts/start_mac.sh      # macOS/Linux
-./scripts/start_windows.ps1 # Windows
-
-# Open http://localhost:8000
+./scripts/start_mac.sh        # macOS/Linux
+./scripts/start_windows.ps1   # Windows
 ```
+
+The script creates `.env` from `.env.example` if missing (set `GROQ_API_KEY` in it), builds the frontend, starts the backend, and prints the URL: http://localhost:8000. Use `scripts/stop_*` to stop; the database persists across runs.
+
+## Backend Development
+
+The market data subsystem can be exercised today:
+
+```bash
+cd backend
+uv sync
+uv run pytest
+uv run --extra demo market_data_demo.py
+```
+
+See [`backend/README.md`](backend/README.md) for details.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `GROQ_API_KEY` | Yes (unless `LLM_MOCK=true`) | Groq API key for AI chat |
-| `TAPETIDE_API_KEY` | No | Tapetide MCP bearer token for real NSE market data; omit to use simulator |
-| `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
-| `MARKET_DATA_SOURCE` | No | `auto` (default), `simulator`, or `tapetide` — force the data source regardless of key/clock |
-| `DATABASE_PATH` | No | Override the SQLite file location (default: repo `db/finally.db`) |
-| `FRONTEND_DIR` | No | Override the static export location (default: repo `frontend/out`) |
-| `PORT` | No | Port the start scripts bind (default 8000); not read by the app at runtime |
+| `GROQ_API_KEY` | Yes, unless `LLM_MOCK=true` | Groq API key for AI chat |
+| `TAPETIDE_API_KEY` | No | Tapetide MCP bearer token for real NSE data; omit to use the simulator |
+| `LLM_MOCK` | No | `true` for deterministic mock LLM responses (testing) |
+| `MARKET_DATA_SOURCE` | No | `auto` (default), `simulator`, or `tapetide` |
+| `DATABASE_PATH` | No | SQLite file location (default: `db/finally.db`) |
+| `FRONTEND_DIR` | No | Static export location (default: `frontend/out`) |
+| `PORT` | No | Port the start scripts bind (default 8000); not read by the app |
+
+Tapetide is capped at 400 calls/day, about 13 minutes of continuous polling, so use it for short demo sessions.
 
 ## Project Structure
 
 ```
-finally/
-├── frontend/    # Next.js static export
-├── backend/     # FastAPI uv project
-├── planning/    # Project documentation and agent contracts
-├── test/        # Playwright E2E tests
-├── db/          # SQLite file (runtime)
-└── scripts/     # Start/stop helpers
+frontend/    Next.js static export (to build)
+backend/     FastAPI uv project (market data done)
+planning/    Plan, status, and agent contracts (start with PLAN.md)
+scripts/     Start/stop helpers (to build)
+test/        Playwright E2E tests (to build)
+db/          SQLite file at runtime (to build)
 ```
 
 ## License

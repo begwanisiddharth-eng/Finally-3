@@ -108,6 +108,11 @@ class TapetideDataSource(MarketDataSource):
         `MarketDataError` on a transport/connection failure (including no live
         client), so the caller does not mistake "couldn't check" for "invalid
         symbol" (§6).
+
+        On a successful validation the fetched quote is written to the cache, so
+        a watchlist add immediately followed by a trade (the one-turn
+        "add X and buy 10" flow, §9) has a fill price without waiting for the
+        next poll.
         """
         if not self._client:
             raise MarketDataError("Tapetide client is not connected")
@@ -115,7 +120,10 @@ class TapetideDataSource(MarketDataSource):
             result = await self._call_batch_quotes([ticker.upper().strip()])
         except Exception as e:
             raise MarketDataError(f"Tapetide validation transport failure: {e}") from e
-        return bool(result) and result[0].get("found", False)
+        if not result or not result[0].get("found", False):
+            return False
+        self._cache_quote(result[0])
+        return True
 
     # --- Internal ---
 
@@ -154,24 +162,32 @@ class TapetideDataSource(MarketDataSource):
                 continue
 
             for quote in quotes:
-                # Use `requested` (the ticker we asked for) as the cache key,
-                # not `symbol` — Tapetide may resolve a renamed/restructured
-                # symbol (e.g. a corporate action) to a different current one.
-                ticker = quote.get("requested", "").upper()
-                if not quote.get("found"):
-                    logger.debug("Tapetide: ticker %s not found", ticker)
-                    continue
-                try:
-                    price = quote["price"]
-                    timestamp = _parse_timestamp(quote["updated_at"])
-                    self._cache.update(
-                        ticker=ticker,
-                        price=price,
-                        timestamp=timestamp,
-                        previous_close=quote.get("prev_close"),
-                    )
-                except (KeyError, TypeError, ValueError) as e:
-                    logger.warning("Skipping malformed quote for %s: %s", ticker, e)
+                self._cache_quote(quote)
+
+    def _cache_quote(self, quote: dict) -> bool:
+        """Parse one get_batch_quotes entry and write it to the cache.
+
+        Returns True if a price was written, False for a `found: false` or
+        malformed quote. Shared by the poll loop and `validate_ticker`.
+        """
+        # Use `requested` (the ticker we asked for) as the cache key, not
+        # `symbol` — Tapetide may resolve a renamed/restructured symbol (e.g. a
+        # corporate action) to a different current one.
+        ticker = quote.get("requested", "").upper()
+        if not quote.get("found"):
+            logger.debug("Tapetide: ticker %s not found", ticker)
+            return False
+        try:
+            self._cache.update(
+                ticker=ticker,
+                price=quote["price"],
+                timestamp=_parse_timestamp(quote["updated_at"]),
+                previous_close=quote.get("prev_close"),
+            )
+            return True
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning("Skipping malformed quote for %s: %s", ticker, e)
+            return False
 
     async def _call_batch_quotes(self, symbols: list[str]) -> list[dict]:
         """Call the get_batch_quotes tool and return its `data` list."""
