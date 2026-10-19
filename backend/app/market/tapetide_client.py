@@ -24,6 +24,7 @@ from .interface import MarketDataError, MarketDataSource
 logger = logging.getLogger(__name__)
 
 TAPETIDE_MCP_URL = "https://mcp.tapetide.com/mcp"
+DEFAULT_MAX_FAILURES = 3  # consecutive failures before the source reports degraded
 BATCH_SIZE = 20  # get_batch_quotes accepts at most 20 symbols per call
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -55,6 +56,7 @@ class TapetideDataSource(MarketDataSource):
         api_key: str,
         price_cache: PriceCache,
         poll_interval: float = 2.0,
+        max_failures: int = DEFAULT_MAX_FAILURES,
     ) -> None:
         self._api_key = api_key
         self._cache = price_cache
@@ -65,9 +67,22 @@ class TapetideDataSource(MarketDataSource):
         # The poll loop and validate_ticker share one MCP Client; serialize all
         # tool calls so they are never issued concurrently on it (§6).
         self._call_lock = asyncio.Lock()
+        # Degraded-mode tracking (§6): consecutive poll failures, plus a dead
+        # poll task (which stops producing per-batch failures altogether).
+        self._max_failures = max_failures
+        self._consecutive_failures = 0
+        self._stopped = False
+
+    def is_degraded(self) -> bool:
+        """True after N consecutive poll failures, or if the poll task died."""
+        if self._consecutive_failures >= self._max_failures:
+            return True
+        return self._task is not None and self._task.done() and not self._stopped
 
     async def start(self, tickers: list[str]) -> None:
         self._tickers = list(tickers)
+        self._stopped = False
+        self._consecutive_failures = 0
         self._task = asyncio.create_task(self._run(), name="tapetide-poller")
         logger.info(
             "Tapetide poller started: %d tickers, %.1fs interval",
@@ -76,6 +91,7 @@ class TapetideDataSource(MarketDataSource):
         )
 
     async def stop(self) -> None:
+        self._stopped = True
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -153,16 +169,22 @@ class TapetideDataSource(MarketDataSource):
         if not self._tickers:
             return
 
+        poll_failed = False
         for i in range(0, len(self._tickers), BATCH_SIZE):
             batch = self._tickers[i : i + BATCH_SIZE]
             try:
                 quotes = await self._call_batch_quotes(batch)
             except Exception as e:
                 logger.error("Tapetide poll failed for batch %s: %s", batch, e)
+                poll_failed = True
                 continue
 
             for quote in quotes:
                 self._cache_quote(quote)
+
+        # One failure per poll cycle, however many batches failed; a fully
+        # successful cycle resets the streak.
+        self._consecutive_failures = self._consecutive_failures + 1 if poll_failed else 0
 
     def _cache_quote(self, quote: dict) -> bool:
         """Parse one get_batch_quotes entry and write it to the cache.

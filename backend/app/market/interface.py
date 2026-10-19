@@ -65,6 +65,15 @@ class MarketDataSource(ABC):
     def get_tickers(self) -> list[str]:
         """Return the current list of actively tracked tickers."""
 
+    def is_degraded(self) -> bool:
+        """True if the source is persistently failing and should be replaced.
+
+        Lets `MarketDataManager` fall back to the simulator (§6, "Tapetide
+        Failure / Degraded Mode"). Sources that cannot fail (the simulator)
+        keep this default of False.
+        """
+        return False
+
     @abstractmethod
     async def validate_ticker(self, ticker: str) -> bool:
         """Return True if `ticker` is a real, recognized symbol for this source.

@@ -5,14 +5,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections.abc import Callable
 
 from .cache import PriceCache
 from .factory import create_market_data_source
 from .interface import MarketDataSource
+from .simulator import SimulatorDataSource
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_INTERVAL = 60.0  # seconds between handover checks
+HEALTH_CHECK_INTERVAL = 5.0  # a degraded source is noticed at least this often
+DEFAULT_FALLBACK_COOLDOWN = 300.0  # seconds before retrying Tapetide after a fallback
 
 
 class MarketDataManager(MarketDataSource):
@@ -33,9 +38,17 @@ class MarketDataManager(MarketDataSource):
         self,
         price_cache: PriceCache,
         check_interval: float = DEFAULT_CHECK_INTERVAL,
+        fallback_cooldown: float = DEFAULT_FALLBACK_COOLDOWN,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._cache = price_cache
         self._check_interval = check_interval
+        self._fallback_cooldown = fallback_cooldown
+        self._clock = clock
+        # Cooldown latch (§6): set when a degraded source forces a fallback so
+        # the supervisor does not swap straight back to the still-broken one.
+        self._force_fallback = False
+        self._retry_after = 0.0
         self._active: MarketDataSource | None = None
         self._lock = asyncio.Lock()
         self._supervisor_task: asyncio.Task | None = None
@@ -101,19 +114,37 @@ class MarketDataManager(MarketDataSource):
     async def _supervise(self) -> None:
         """Periodically check whether the desired source has changed."""
         while True:
-            await asyncio.sleep(self._check_interval)
+            # Wake often enough to notice a degraded source promptly; the
+            # desired-source check is cheap (env + clock), so run it each tick.
+            await asyncio.sleep(min(self._check_interval, HEALTH_CHECK_INTERVAL))
             try:
                 await self._maybe_handover()
             except Exception:
                 logger.exception("Market data handover check failed")
 
     async def _maybe_handover(self) -> None:
-        """Swap the active source if the env/trading-hours decision changed."""
-        candidate = create_market_data_source(self._cache)
-
+        """Swap the active source if it is degraded or the desired source changed."""
         async with self._lock:
-            if self._active is None or type(candidate) is type(self._active):
-                return  # No change in desired source.
+            if self._active is None:
+                return
+
+            if self._active.is_degraded() and not isinstance(self._active, SimulatorDataSource):
+                self._force_fallback = True
+                self._retry_after = self._clock() + self._fallback_cooldown
+                logger.warning(
+                    "%s is degraded; falling back to simulator for %.0fs",
+                    type(self._active).__name__,
+                    self._fallback_cooldown,
+                )
+                candidate: MarketDataSource = SimulatorDataSource(price_cache=self._cache)
+            else:
+                candidate = create_market_data_source(self._cache)
+                if type(candidate) is type(self._active):
+                    return  # No change in desired source.
+                if self._force_fallback:
+                    if self._clock() < self._retry_after:
+                        return  # Latch holds: don't flap back to the broken source.
+                    self._force_fallback = False  # Cooldown over: one fresh attempt.
 
             old = self._active
             tickers = old.get_tickers()
