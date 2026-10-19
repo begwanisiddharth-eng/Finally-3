@@ -101,11 +101,12 @@ class DailyBar:
 
     ticker: str          # normalized: strip().upper(), the REQUESTED symbol
     day: date            # trading date (IST), not a timestamp
-    open: float
+    open: float          # Tapetide: split/bonus-adjusted (dividends not adjusted)
     high: float
     low: float
-    close: float
-    volume: int | None   # None if the provider omits it
+    close: float         # Tapetide: split/bonus-adjusted close
+    raw_close: float | None  # the actual printed close; None if no raw print exists
+    volume: int | None   # unadjusted; None if the provider omits it
     source: str          # "tapetide" | "simulated"
 
     def to_dict(self) -> dict:
@@ -130,7 +131,11 @@ Invariants every provider must satisfy (tested identically against both):
 `bars` ascending by `day` with unique days; `high >= max(open, close)`; `low <= min(open,
 close)`; all prices `> 0`; `low <= high`; weekdays only.
 
-Fractional/delivery data from Tapetide (delivery %) is dropped in v1 — YAGNI.
+Adjusted vs raw: Tapetide's `close`/OHLC are back-adjusted for splits and bonuses, so old bars
+do not match what was printed then. Live prices and `prev_close` are raw. Anything comparing a
+bar to a live price (e.g. `get_latest_closes`) must use `raw_close`, never `close`. The
+simulator produces unadjusted bars and sets `raw_close == close`. Tapetide does not return
+delivery %, so there is no such field.
 
 ## 5. Interfaces
 
@@ -253,8 +258,10 @@ needing a PLAN.md §7 update, so **not** done here.
   does not count against quota.]**
 - Calls `get_price_history` (`symbol`, `days`, `end_date`, `interval="daily"`), pages with
   `meta.window.next_cursor` while `truncated`, then trims to `[start, end]`.
-- `days` = calendar days from `start` to `end` inclusive, clamped to 2000.
-- Parse rows defensively; see `TAPETIDE_API.md` section 4.3 for the unverified key names.
+- `days` is **calendar days** back from `end_date` (verified live: `days: 5` returned 3 bars), so
+  pass `days = (end - start).days + 1`, clamped to 2000, with `end_date = end`, and page with
+  `meta.window.next_cursor` per `TAPETIDE_API.md` section 5.3.
+- Row keys (verified live): `date, open, high, low, close, raw_close, volume`.
 
 ```python
 class TapetideHistory(HistoricalSource):
@@ -273,29 +280,26 @@ class TapetideHistory(HistoricalSource):
 
     @staticmethod
     def _parse_bar(ticker: str, row: dict) -> DailyBar | None:
-        def pick(*names):
-            for n in names:
-                if row.get(n) is not None:
-                    return row[n]
-            return None
         try:
             return DailyBar(
                 ticker=ticker,
-                day=date.fromisoformat(str(pick("date", "day", "trade_date"))[:10]),
-                open=float(pick("open", "o")), high=float(pick("high", "h")),
-                low=float(pick("low", "l")), close=float(pick("close", "c")),
-                volume=int(v) if (v := pick("volume", "vol")) is not None else None,
+                day=date.fromisoformat(str(row["date"])[:10]),
+                open=float(row["open"]), high=float(row["high"]),
+                low=float(row["low"]), close=float(row["close"]),
+                raw_close=float(rc) if (rc := row.get("raw_close")) is not None else None,
+                volume=int(v) if (v := row.get("volume")) is not None else None,
                 source="tapetide",
             )
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
             return None   # skip malformed row, caller logs the count
 ```
 
 `_client()` and `_fetch()` are the section 5.1/5.3 snippets from `TAPETIDE_API.md`.
 
-An unknown symbol: Tapetide's behavior for `get_price_history` on an unknown symbol is
-**[unverified]** (error vs empty). Treat both as `DailyBars(error="unknown ticker")` **only if**
-the error text clearly says not-found; a generic exception is a transport failure.
+An unknown symbol makes `get_price_history` raise a tool error whose text starts with
+`Stock not found` (verified live). Map exactly that to `DailyBars(error="unknown ticker")`; any
+other exception is a transport failure and becomes `MarketDataError`. (Batch quotes behave
+differently: `found: false`, no error.)
 
 ### 6.2 `SimulatedHistory` (`market/sim_history.py`)
 
@@ -380,11 +384,18 @@ backend/app/market/
   day.
 - `get_latest_closes` prefers `previous_close` from the cache.
 
-## 11. Open questions (answer with the smoke test in TAPETIDE_API.md §5.6)
+## 11. Open questions
 
-1. Exact `get_price_history` response keys and the `meta` shape.
-2. Behavior on unknown symbols and on quota exhaustion.
-3. Whether history calls and MCP handshakes count against the 400/day plan.
-4. Whether bars are split/bonus adjusted. The simulator makes none, so mixed-source charts would
-   show a seam at any corporate action; acceptable for a demo, but state it in the UI if history
-   is ever charted.
+Resolved by live checks on 2026-10-19 (see `TAPETIDE_API.md`): response keys and `meta` shape;
+unknown-symbol behavior; calendar-day semantics of `days`; split/bonus adjustment (`raw_close`
+provided).
+
+Still open (need the real key and the Tapetide dashboard quota counter):
+
+1. Behavior and error text on quota exhaustion.
+2. Whether history calls and MCP handshakes count against the 400/day plan, and whether a
+   history call costs more than one unit.
+3. Refresh cadence of `updated_at` (quotes looked a couple of minutes behind wall clock), which
+   decides whether 2s polling is worth its quota.
+4. Mixed-source charts show a seam at any corporate action, since the simulator's bars are
+   unadjusted; state it in the UI if history is ever charted.

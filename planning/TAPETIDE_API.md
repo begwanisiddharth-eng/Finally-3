@@ -6,18 +6,25 @@ or extending `backend/app/market/tapetide_client.py`.
 ## Provenance and confidence
 
 Tapetide's own docs pages were **not reachable** from the research sandbox (outbound network
-policy blocked `tapetide.com`, `mcp.tapetide.com` and `glama.ai`). Facts below come from three
-sources, and each section says which applies:
+policy blocked `tapetide.com`, `mcp.tapetide.com` and `glama.ai`). The first draft of this
+document therefore relied on search summaries; it was then **checked against live tool calls**
+(4 calls: a 3-symbol batch quote incl. one bad symbol, `get_price_history` for 5 days, for an
+unknown symbol, and for a 3000-day request with `end_date`) plus Tapetide's own `read_me` guide.
+Several corrections resulted (response keys, UTC timestamps, calendar-day `days`, no delivery %, adjusted vs raw prices, unknown-symbol behavior) and are folded in below. Facts come from four sources, and each
+section says which applies:
 
 | Tag | Meaning |
 |---|---|
 | **[verified-in-repo]** | Taken from working code and tests in this repo (`tapetide_client.py`, `backend/tests/market/test_tapetide.py`), which was written against live responses (seed prices were fetched from Tapetide on 2026-10-16). |
+| **[verified-live]** | Observed in live calls to Tapetide's MCP tools on 2026-10-19 (a Monday, ~14:00 IST, market open), made through the Tapetide MCP tools attached to the research session. These are the same tools and server the backend calls. |
 | **[listing]** | Reported by third-party directory listings and search summaries of Tapetide's tool pages (Glama, GitHub README, mcp.tapetide.com), not confirmed against a live call. |
 | **[unverified]** | Inferred or not found. Must be checked with a live call before relying on it. |
 
-Before building on anything tagged **[listing]** or **[unverified]**, run the smoke test
-(section 5.6) with a real key and diff the output against this document. Fix the doc, then the
-code.
+Anything still tagged **[listing]** or **[unverified]** was not settled by the live checks.
+Note that live checks went through the MCP tools attached to the research session, **not
+through `TAPETIDE_API_KEY` over the bearer-token HTTP path** the backend uses; the tool schemas
+and payloads should be identical, but the smoke test (section 5.6) with the real key remains the
+final confirmation.
 
 ## 1. What Tapetide is
 
@@ -46,7 +53,8 @@ code.
 | Plan used by this project | 400 calls/day | PLAN.md §6 (project owner's plan) |
 | Free tier (public listing) | 50 successful calls/day, 1,000/month | **[listing]** |
 | Cost of one `get_batch_quotes` call | 1 call regardless of symbol count (up to 20) | **[listing]** |
-| Failed calls | Reported as "successful calls" being counted, so failures are probably free. | **[unverified]** |
+| Failed calls | Listing says *successful* calls are counted, so failures are probably free. | **[unverified]** |
+| Whether `get_price_history` costs more than one call | Not stated anywhere, including `read_me`. | **[unverified]** |
 
 Consequences for design (already reflected in PLAN.md §6):
 
@@ -64,9 +72,9 @@ Only these are used. All are called with `session.call_tool(name, arguments)`.
 
 | Argument | Type | Notes |
 |---|---|---|
-| `symbols` | `list[str]` | NSE symbols, **max 20 per call**. Example `["RELIANCE","TCS","HDFCBANK"]`. **[listing]** |
+| `symbols` | `list[str]` (a string is also accepted by the schema) | NSE symbols, **max 20 per call**; over 20, split. Example `["RELIANCE","TCS","HDFCBANK"]`. **[verified-live]** (schema) |
 
-Response (`result.structured_content`), shape **[verified-in-repo]**:
+Response (`result.structured_content`). **[verified-live]**, 2026-10-19:
 
 ```json
 {
@@ -74,18 +82,33 @@ Response (`result.structured_content`), shape **[verified-in-repo]**:
     {
       "requested": "HDFCBANK",
       "symbol": "HDFCBANK",
+      "name": "HDFC Bank Ltd",
       "found": true,
-      "price": 728.85,
-      "prev_close": 731.40,
-      "updated_at": "2026-10-16T15:29:58+05:30"
+      "price": 708.35,
+      "prev_close": 728.85,
+      "change": -20.5,
+      "change_pct": -2.81265006517116,
+      "open": 733.4,
+      "high": 733.4,
+      "low": 707.7,
+      "volume": 22644319,
+      "updated_at": "2026-10-19T08:30:49+00:00"
     },
     {
       "requested": "NOTAREALCO",
-      "found": false
+      "symbol": "NOTAREALCO",
+      "found": false,
+      "name": null, "price": null, "prev_close": null, "change": null,
+      "change_pct": null, "open": null, "high": null, "low": null,
+      "volume": null, "updated_at": null
     }
-  ]
+  ],
+  "meta": {"count": 3}
 }
 ```
+
+An unknown symbol is **not** an error: the entry is present with `found: false` and every other
+field `null` (not absent). All entries come back in request order.
 
 Field notes:
 
@@ -93,62 +116,106 @@ Field notes:
 |---|---|
 | `requested` | The symbol you asked for, echoed back. **Key the cache by this**, not `symbol`. |
 | `symbol` | The symbol Tapetide resolved to. Can differ after a corporate action (e.g. a demerger/rename such as TATAMOTORS to TMCV). |
-| `found` | `false` means Tapetide does not know the symbol. This is the validation signal. A `found: false` entry may carry no price fields at all, so always check `found` first. |
+| `found` | `false` means Tapetide does not know the symbol. This is the validation signal. Price fields are `null` then, so check `found` before using them. |
 | `price` | Last traded price, rupees. |
 | `prev_close` | The exchange's previous close. Drives day-change %. May be absent; treat as optional. |
-| `updated_at` | ISO-8601. Normally has a UTC offset. If naive, **assume IST**, not server-local time. |
+| `updated_at` | ISO-8601. Observed with a **UTC** offset (`+00:00`), not IST. Parse offset-aware; if one is ever naive, **assume IST**, not server-local time. `null` when `found` is false. |
+| `change`, `change_pct` | Day change vs `prev_close`, in rupees and percent (`-2.81` means -2.81%, not a fraction). Redundant with what `PriceUpdate.day_change*` derive; FinAlly ignores them. |
+| `open`, `high`, `low`, `volume`, `name` | Today's session so far. Available if the UI ever wants them; not used today. |
 
-Other fields the tool may return (volume, change %, market cap, 52-week range) are **[unverified]**
-for `get_batch_quotes` and are ignored by FinAlly. Do not depend on them.
+Not in the batch payload (so do not expect them): market cap, PE/PB, 52-week range. Those are
+in `get_stock_quote` / `get_company_profile`.
 
-Real-time vs delayed: no source states the latency. Treat `updated_at` as the truth and surface
-staleness through `market_data_healthy` rather than assuming real-time. **[unverified]**
+Real-time vs delayed: still not stated by Tapetide. In the live check, `updated_at` was about
+2.5 minutes behind the wall clock when read, and the two symbols' stamps were one second apart.
+That is consistent with quotes refreshed server-side every so often rather than a tick feed, so
+a 2s poll can legitimately return an unchanged `updated_at`/`price` for several polls in a row.
+Do not treat "price unchanged" as an outage. Surface staleness via `market_data_healthy`
+(PLAN.md §6). **[verified-live]** for the observation, **[unverified]** for the refresh cadence.
+
+Note `price` can be well away from the seed table: HDFCBANK was 708.35 against the simulator seed
+728.85, because `prev_close` here (728.85) is what the seed was taken from on the previous
+session. Expected, not a bug.
 
 Outside NSE hours (9:15-15:30 IST, Mon-Fri) the quote stays at the last close and `updated_at`
 does not advance. This is why FinAlly switches to the simulator then (PLAN.md §5).
 
-### 4.2 `get_stock_quote` — one symbol, richer fields
+### 4.2 `get_stock_quote` (alias `get_live_quote`) — one symbol, richer fields
 
 Single-symbol quote described as returning LTP, change %, volume, market cap, PE, PB and the
-52-week range. **[listing]** FinAlly does not use it for prices: `get_batch_quotes` with one symbol
+52-week range. **[listing]**; `get_live_quote` is documented by Tapetide as an alias taking
+`symbol` (with `ticker`/`identifier` accepted as aliases of `symbol`). FinAlly does not use it for prices: `get_batch_quotes` with one symbol
 is the same cost and has the same `found` semantics we already parse. Mentioned so nobody
 re-researches it.
 
 ### 4.3 `get_price_history` — end-of-day (daily) OHLCV
 
-This is the tool for end-of-day prices. **[listing]** for the arguments below.
+This is the tool for end-of-day prices. Arguments and response **[verified-live]**.
 
 | Argument | Type | Notes |
 |---|---|---|
 | `symbol` | `str` | Required. `ticker` is accepted as an alias. **One symbol per call.** |
-| `days` | `int` | Lookback window. Default **365**, max **2000**. |
+| `days` | `int` | Lookback window in **calendar days** counted back from `end_date` (or from today if omitted), **not** a count of bars/sessions. Default **365**, max **2000**. The tool description's "days:5 for the last 5 sessions" is misleading: on Mon 2026-10-19 `days: 5` returned **3** bars (Oct 14-16). A 3000-day request with `end_date=2026-10-16` was capped to 2000 days and started 2021-04-26, i.e. exactly 2000 calendar days earlier. |
 | `end_date` | `str` `YYYY-MM-DD` | Optional, **inclusive** upper bound. Also the paging cursor. |
 | `interval` | `str` | `daily` (default) or `weekly`. |
 
-Output: one row per bar with date, open, high, low, close, volume and delivery %. **[listing]**
-Exact JSON key names, and whether rows live under `data`, are **[unverified]**. The code in this
-document therefore normalizes defensively (several candidate key names). Confirm with the smoke
-test, then tighten `_parse_bar`.
-
-Truncation and paging **[listing]**:
-
-- A request longer than 2000 days is silently shortened. Always read `meta.window`.
-- `meta.window.truncated: true` means you did not get everything. `meta.window.requested_days`
-  is what you asked for and `meta.window.next_cursor` is the `end_date` to pass on the next call
-  to go further back.
-- To build a long series, loop until `truncated` is false.
-
-Expected (illustrative, not verified) shape:
+Response, RELIANCE `days: 5`, **[verified-live]** (trimmed):
 
 ```json
 {
   "data": [
-    {"date": "2026-10-16", "open": 731.0, "high": 735.2, "low": 726.4,
-     "close": 728.85, "volume": 8123456, "delivery_pct": 52.1}
+    {"date": "2026-10-15", "open": 1185.2, "high": 1218.8, "low": 1177.2,
+     "close": 1215, "raw_close": 1215, "volume": 23456219},
+    {"date": "2026-10-16", "open": 1215, "high": 1215.4, "low": 1193,
+     "close": 1211.2, "raw_close": 1211.2, "volume": 17225283}
   ],
-  "meta": {"window": {"truncated": false, "requested_days": 30, "next_cursor": null}}
+  "meta": {
+    "count": 3, "days": 5, "interval": "daily",
+    "adjustment": {"series": "split_bonus_adjusted", "dividend_adjusted": false,
+                   "volume_adjusted": false, "currency": "INR",
+                   "raw_series_field": "raw_close"},
+    "window": {"requested_days": 5, "served_days": 5, "max_days": 2000,
+               "truncated": false, "returned_rows": 3, "has_more": true,
+               "first_date": "2026-10-14", "last_date": "2026-10-16",
+               "end_date": null, "next_cursor": "2026-10-13"},
+    "coverage": {"first_stored_date": "2000-09-22", "last_stored_date": "2026-10-16"}
+  }
 }
 ```
+
+Facts established by the live calls:
+
+- Rows are under `data`, ascending by `date` (`YYYY-MM-DD`, a trading date, no time). Keys:
+  `date, open, high, low, close, raw_close, volume`. There is **no delivery %** in the payload
+  despite the tool description; do not model it.
+- **Prices are split/bonus back-adjusted; dividends are not.** `close` (and, per
+  `meta.adjustment.series`, open/high/low) are adjusted. `raw_close` is the actual printed close
+  and is the only raw field (no raw open/high/low). Example: RELIANCE on 2021-04-26 shows
+  `close: 879.65` but `raw_close: 1937.85`, because of the 1:1 bonus. The latest bars equal
+  their raw values. `raw_close` is `null` where no raw print exists (older history, ETFs); never
+  substitute `close` for it. `volume` is **not** adjusted.
+- Consequence for FinAlly: live `price`/`prev_close` are raw. For "last close" use `raw_close`
+  (or the quote's `prev_close`), not the adjusted `close`, or old and new numbers will not
+  reconcile after a corporate action. Charts of adjusted series are fine.
+- Weekends and exchange holidays have no row, which is why `days: 5` over a weekend returns
+  fewer than 5 bars. Today's bar does not exist until the day is stored: on Monday 2026-10-19
+  during market hours the newest bar was Friday's (`last_stored_date: 2026-10-16`).
+- `meta.window.has_more` and `next_cursor` are present **even when `truncated` is false**
+  (`next_cursor` is the day before `first_date`, here `2026-10-13`). `has_more: true` therefore
+  only means "older data exists", not "you got less than you asked for". `truncated: true` is the
+  signal that the request was capped (requested 3000, `served_days` 2000, `returned_rows` 1355).
+- Oldest stored bar for RELIANCE is 2000-09-22.
+- Large responses are big (126 of 1355 rows alone filled ~25k characters). Page and trim in
+  code; do not log payloads.
+
+Paging recipe: request `days = min(remaining_calendar_days, 2000)` with `end_date = cursor`;
+append `data`; set `cursor = meta.window.next_cursor`; stop when the oldest returned date is
+`<= wanted_start`, when `has_more` is false, or when `data` is empty.
+
+Unknown symbol: `get_price_history` **raises a tool error** (not an empty result):
+`Stock not found: NOTAREALCO. Use search to find the correct symbol.` **[verified-live]**. Map
+a message that starts with `Stock not found` to "unknown ticker"; treat any other exception as a
+transport failure. This differs from `get_batch_quotes`, which returns `found: false`.
 
 Important limitation: **there is no batch history tool.** End-of-day prices for N tickers cost
 N calls. The unified API therefore fans out with bounded concurrency and caches aggressively.
@@ -158,9 +225,14 @@ last close after hours.
 
 ### 4.4 Other tools you may meet
 
-`search_stocks` (find a symbol by name, symbol, BSE code or ISIN), `get_index_history`,
-`screen_stocks`, `screen_stocks_technical`, `get_financials`, `get_fii_dii_detail`, option-chain
-and IV tools. **[listing]** None are used for pricing. `search_stocks` is a candidate for a future
+Tapetide's own `read_me` guide lists them. None are used for pricing, except those noted.
+`search_stocks` (find a symbol by name, symbol, BSE code or ISIN), `get_index_history` (index
+levels, e.g. Nifty), `get_adjustment_factors` (split/bonus factors to rebuild raw prices),
+`get_observation_status` (per-day reason: traded / weekend / holiday / no_print, useful to tell a
+holiday from missing data), `get_trending_stocks`, `get_market_pulse`, `get_india_vix`, screeners,
+financials, options tools. `read_me` also mentions REST routes on `mcp.tapetide.com`
+(`/v1/stocks/{symbol}/documents...`) for filings only; no REST price endpoint was found, so
+MCP remains the only price path. **[verified-live]** for the list (from `read_me`). `search_stocks` is a candidate for a future
 "did you mean" on a failed ticker validation.
 
 ## 5. Connecting from Python
@@ -222,40 +294,50 @@ Each chunk is one billable call.
 
 ### 5.3 End-of-day history for one symbol, with paging
 
+`days` is **calendar days** back from `end_date`, so page by date, not by row count:
+
 ```python
-from datetime import date
+from datetime import date, timedelta
 
 
-async def fetch_daily(client, symbol: str, days: int = 365, end_date: date | None = None):
-    """Return raw rows (newest window first page, then older pages) for one symbol."""
+async def fetch_daily(client, symbol: str, start: date, end: date) -> list[dict]:
+    """Raw rows for [start, end], ascending.
+
+    Raises on transport failure and on an unknown symbol ("Stock not found: ...").
+    """
     rows: list[dict] = []
-    remaining = days
-    cursor = end_date.isoformat() if end_date else None
-    while remaining > 0:
-        args = {"symbol": symbol, "days": min(remaining, 2000)}
-        if cursor:
-            args["end_date"] = cursor
-        res = await client.call_tool("get_price_history", args)
+    cursor = end                                   # inclusive upper bound
+    while cursor >= start:
+        span = min((cursor - start).days + 1, 2000)
+        res = await client.call_tool(
+            "get_price_history",
+            {"symbol": symbol, "days": span, "end_date": cursor.isoformat()},
+        )
         payload = res.structured_content or {}
         page = payload.get("data", [])
-        rows.extend(page)
+        rows = page + rows                         # older page goes in front
         window = (payload.get("meta") or {}).get("window") or {}
-        remaining -= len(page)
-        if not window.get("truncated") or not window.get("next_cursor") or not page:
+        next_cursor = window.get("next_cursor")
+        if not page or not window.get("has_more") or not next_cursor:
             break
-        cursor = window["next_cursor"]
-    return rows
+        cursor = date.fromisoformat(next_cursor)
+        if span < 2000:                            # window already reached `start`
+            break
+    return [r for r in rows if start <= date.fromisoformat(r["date"]) <= end]
 ```
+
+One page covers up to 2000 calendar days (~5.5 years, ~1,350 bars), so a 1-year request is one
+call. Each page is one billable call (assumed; see section 3).
 
 ### 5.4 Fan out history for many tickers (bounded concurrency)
 
 ```python
-async def fetch_daily_many(client, symbols: list[str], days: int, limit: int = 4):
+async def fetch_daily_many(client, symbols: list[str], start: date, end: date, limit: int = 4):
     sem = asyncio.Semaphore(limit)
 
     async def one(sym: str):
         async with sem:
-            return sym, await fetch_daily(client, sym, days)
+            return sym, await fetch_daily(client, sym, start, end)
 
     return dict(await asyncio.gather(*(one(s) for s in symbols)))
 ```
@@ -293,19 +375,24 @@ async def smoke():
     print(h.structured_content)                          # confirm row keys and meta.window
 ```
 
-Three calls, three units of quota. Paste the output into this file's section 4 and remove the
-**[unverified]** tags that it settles.
+Three calls, three units of quota. The equivalent checks were already run once through the
+attached MCP tools (see Provenance); running this with the real `TAPETIDE_API_KEY` additionally
+confirms the bearer-token path, token validity and that quota decrements as assumed. Compare the
+quota counter in your Tapetide dashboard before and after to settle the remaining **[unverified]**
+cost questions in section 3.
 
 ## 6. Error handling
 
 | Situation | What you see | FinAlly behavior |
 |---|---|---|
-| Unknown symbol | Entry with `found: false` | `validate_ticker` returns `False`; poll skips it. |
+| Unknown symbol (quotes) | Entry with `found: false`, all other fields `null` | `validate_ticker` returns `False`; poll skips it. |
+| Unknown symbol (history) | Tool error `Stock not found: X. Use search to find the correct symbol.` | `DailyBars(error="unknown ticker")`, not a transport failure. |
+| Unsupported `interval` (`1m`, `monthly`...) | Tool error with an explanation (per tool description) | Programming error; only `daily`/`weekly` are valid. |
 | Bad/expired token | Connection or tool call raises | Transport failure: `MarketDataError` (503), counts toward fallback (PLAN.md §6). |
 | Network down / timeout | Exception from `call_tool` | Same. |
-| Quota exhausted | Tool error (exact text **[unverified]**) | Same; falls back to simulator after N failures. |
+| Quota exhausted | Tool error (exact text **[unverified]**, not triggered) | Same; falls back to simulator after N failures. |
 | Malformed row | Missing `price` / `updated_at` | Skip the row, log a warning (as `_cache_quote` does). |
-| History truncated | `meta.window.truncated` true | Page with `next_cursor`, or return what we have and flag `truncated`. |
+| History capped | `meta.window.truncated` true | Page with `next_cursor` (section 4.3). |
 
 Never report a transport failure as "invalid symbol".
 

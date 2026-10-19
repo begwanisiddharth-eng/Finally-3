@@ -211,7 +211,8 @@ API key. The live simulator cannot supply this: it only has "now".
 Prototype, run against the invariants above (anchor close exact; two overlapping ranges
 produce identical bars for shared days; OHLC valid). It belongs in
 `backend/app/market/sim_history.py`; the `SimulatedHistory` class wraps `synth_bars` and returns
-`DailyBars(source="simulated")`.
+`DailyBars(source="simulated")`, building each `DailyBar` with `raw_close == close` (the
+simulator has no corporate actions, so there is nothing to adjust).
 
 ```python
 import hashlib
