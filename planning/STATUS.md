@@ -26,6 +26,9 @@ this file as components land. Always confirm against the filesystem — this fil
   mount. Also hosts the Tapetide degraded-mode fallback — the `_force_fallback` + `retry_after`
   cooldown latch on the manager (§6, N=3, 5-min cooldown) — which is specified but not yet coded;
   and the API mapping of `MarketDataError` to `503` on the validation path (§6/§8).
+  Implementation-ready spec for the remaining market-data work (degraded-mode counter + latch,
+  MCP tool-error detection, call timeouts, health freshness, SSE router fix, tracked-ticker
+  helpers): `planning/MARKET_DATA_DESIGN.md` §18.
 - **`backend/db/`** — schema, lazy/lifespan init, and row seeding for the five tables (§7),
   via `aiosqlite`.
 - **API endpoints** — portfolio, watchlist, chat, health (§8), with the `{"error": ...}`
