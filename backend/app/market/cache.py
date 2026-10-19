@@ -19,6 +19,7 @@ class PriceCache:
         self._prices: dict[str, PriceUpdate] = {}
         self._lock = Lock()
         self._version: int = 0  # Monotonically increasing; bumped on every update
+        self._last_write: float = 0.0  # Wall-clock time of the last write (for freshness)
 
     def update(
         self,
@@ -52,6 +53,7 @@ class PriceCache:
             )
             self._prices[ticker] = update
             self._version += 1
+            self._last_write = time.time()
             return update
 
     def get(self, ticker: str) -> PriceUpdate | None:
@@ -78,6 +80,12 @@ class PriceCache:
     def version(self) -> int:
         """Current version counter. Useful for SSE change detection."""
         return self._version
+
+    def seconds_since_update(self) -> float:
+        """Wall-clock seconds since the last write, or inf if never written."""
+        if self._last_write == 0.0:
+            return float("inf")
+        return time.time() - self._last_write
 
     def __len__(self) -> int:
         with self._lock:

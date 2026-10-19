@@ -19,26 +19,30 @@ this file as components land. Always confirm against the filesystem — this fil
   `TapetideDataSource` counts consecutive poll failures (N=3) and treats a dead poll task as
   degraded; `MarketDataManager` falls back to the simulator and holds a `_force_fallback` /
   `_retry_after` latch (5-min cooldown) so it cannot flap. The supervisor ticks at least every 5s.
-- **Backend test suite** (`backend/tests/market/`) — 9 modules, `uv run --extra dev pytest` → 119 passed.
+- **`backend/app/main.py`** — FastAPI entrypoint: `load_dotenv()`, repo-root path resolution
+  (§11), lifespan init/shutdown ordering (§7), `MarketDataManager` wiring, all API routers, the
+  normalized `{"error": ...}` envelope, SSE route reading the cache from `app.state`, and the
+  static mount (served only when `frontend/out/` exists). Health freshness via a new
+  `PriceCache.seconds_since_update()`.
+- **`backend/db/`** — `schema.sql` for the five tables (§7); init + seeding + all queries in
+  `app/db.py` via `aiosqlite`.
+- **API endpoints** — portfolio, watchlist, chat, health (§8), with the `{"error": ...}`
+  envelope and response shapes from §8. Logic in `app/portfolio.py`, `app/watchlist.py`,
+  `app/chat.py`, `app/routes/`.
+- **LLM integration** — groq-skill via LiteLLM, structured outputs, auto-execution + ordering
+  (adds -> trades -> removals), server-side SEBI enforcement, `LLM_MOCK` mode (§9). Validated
+  against the real Groq API and in mock mode.
+- **`scripts/`** — `start`/`stop` for macOS/Linux and Windows (§11): .env bootstrap, GROQ check
+  (skipped under `LLM_MOCK`), already-running/stale-PID handling, health poll. Idempotent.
+- **Backend + API test suite** — `uv run --extra dev pytest` → 136 passed (119 market +
+  17 API integration via FastAPI TestClient running the lifespan).
+- **`db/.gitkeep`** — top-level runtime DB directory placeholder.
 - **Repo scaffolding** — `.github/` CI workflows, `.gitignore`, `.env.example`, both READMEs,
   `backend/pyproject.toml` (+ `uv.lock`), `backend/market_data_demo.py`.
 
 ## To build
 
-- **`backend/app/main.py`** — FastAPI entrypoint: `load_dotenv()`, repo-root path resolution
-  (§11), lifespan init/shutdown ordering (§7), `MarketDataManager` wiring, API routers, static
-  mount. Also the API mapping of `MarketDataError` to `503` on the validation path (§6/§8).
-  Implementation-ready spec for the remaining market-data work (degraded-mode counter + latch,
-  MCP tool-error detection, call timeouts, health freshness, SSE router fix, tracked-ticker
-  helpers): `planning/MARKET_DATA_DESIGN.md` §18.
-- **`backend/db/`** — schema, lazy/lifespan init, and row seeding for the five tables (§7),
-  via `aiosqlite`.
-- **API endpoints** — portfolio, watchlist, chat, health (§8), with the `{"error": ...}`
-  envelope and response shapes from §8.
-- **LLM integration** — groq-skill via LiteLLM, structured outputs, auto-execution + ordering,
-  server-side SEBI enforcement, `LLM_MOCK` mode (§9). Needs `uv add litellm pydantic tenacity`.
 - **`frontend/`** — Next.js static export (App Router, `output:'export'`, TS strict), Tailwind
-  dark theme, Lightweight Charts + Recharts Treemap, all §10 panels.
-- **`scripts/`** — `start`/`stop` for macOS/Linux and Windows (§11).
-- **`test/`** — Playwright E2E with the isolation env from §12.
-- **`db/.gitkeep`** — top-level runtime DB directory placeholder.
+  dark theme, Lightweight Charts, self-rendered heatmap, all §10 panels. Not yet started; the
+  backend serves the API only until this lands.
+- **`test/`** — Playwright E2E with the isolation env from §12 (depends on the frontend).

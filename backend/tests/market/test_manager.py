@@ -145,7 +145,19 @@ class TestMarketDataManager:
         await manager.stop()
 
     async def test_supervise_triggers_handover_on_interval(self):
-        """The background supervisor loop calls _maybe_handover on each tick."""
+        """The background supervisor loop calls _maybe_handover on each tick.
+
+        The Tapetide poll loop is stubbed so the handover does not depend on a
+        real MCP/SSL connection — otherwise a connection failure would make the
+        new source degraded and the manager would immediately fall back,
+        masking the handover this test is checking.
+        """
+        import asyncio
+
+        async def _noop_run(self):
+            while True:
+                await asyncio.sleep(3600)
+
         cache = PriceCache()
         manager = MarketDataManager(cache, check_interval=0.05)
 
@@ -154,9 +166,8 @@ class TestMarketDataManager:
 
         with patch.dict(os.environ, {"TAPETIDE_API_KEY": "test-key"}, clear=True):
             with patch("app.market.factory.is_nse_trading_hours", return_value=True):
-                import asyncio
+                with patch.object(TapetideDataSource, "_run", _noop_run):
+                    await asyncio.sleep(0.15)  # Let the supervisor tick at least once
+                    assert isinstance(manager._active, TapetideDataSource)
 
-                await asyncio.sleep(0.15)  # Let the supervisor tick at least once
-
-        assert isinstance(manager._active, TapetideDataSource)
         await manager.stop()
