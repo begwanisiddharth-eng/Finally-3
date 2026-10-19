@@ -8,7 +8,7 @@ Built entirely by coding agents as a capstone project for an agentic AI coding c
 
 See [`planning/STATUS.md`](planning/STATUS.md) for the authoritative build status.
 
-- **Done**: the full backend - market data subsystem (simulator, Tapetide client, live handover), SQLite database, all REST + SSE API endpoints, LLM chat with auto-execution, start/stop scripts, and 136 passing backend tests.
+- **Done**: the full backend - market data subsystem (simulator, Tapetide client, live handover), SQLite database, all REST + SSE API endpoints, LLM chat with auto-execution, start/stop scripts, and 144 passing backend tests.
 - **To build**: the Next.js frontend and the Playwright E2E suite in `test/`.
 
 The backend runs today and serves every `/api/*` endpoint. Until the frontend is built, the start scripts launch the API only.
@@ -60,7 +60,7 @@ With the backend running, the following endpoints are live (see PLAN.md section 
 ```bash
 cd backend
 uv sync --extra dev
-uv run --extra dev pytest          # 136 tests
+uv run --extra dev pytest          # 144 tests
 uv run --extra dev ruff check app/ tests/
 uv run --extra demo market_data_demo.py
 ```
@@ -88,7 +88,7 @@ frontend/    Next.js static export (to build)
 backend/     FastAPI uv project (built)
   app/       API routes, db, portfolio, chat, market data
   db/         schema.sql
-  tests/     136 backend + API tests
+  tests/     144 backend + API tests
 planning/    Plan, status, and agent contracts (start with PLAN.md)
 scripts/     Start/stop helpers (built)
 test/        Playwright E2E tests (to build)

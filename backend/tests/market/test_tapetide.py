@@ -1,5 +1,6 @@
 """Tests for TapetideDataSource (mocked MCP client)."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,7 +31,19 @@ def _mock_client(data: list[dict]) -> MagicMock:
     """Build a mock mcp.Client whose call_tool returns `data` as structured content."""
     client = MagicMock()
     result = MagicMock()
+    result.is_error = False  # an unset MagicMock attr is truthy -> would read as a tool error
     result.structured_content = {"data": data, "meta": {"count": len(data)}}
+    client.call_tool = AsyncMock(return_value=result)
+    return client
+
+
+def _error_client(text: str = "Daily quota exceeded") -> MagicMock:
+    """A client whose call_tool returns an is_error result (quota/auth/server error)."""
+    client = MagicMock()
+    result = MagicMock()
+    result.is_error = True
+    result.structured_content = None
+    result.content = [MagicMock(text=text)]
     client.call_tool = AsyncMock(return_value=result)
     return client
 
@@ -212,6 +225,55 @@ class TestTapetideDataSource:
 
         with pytest.raises(MarketDataError):
             await source.validate_ticker("RELIANCE")
+
+    async def test_tool_error_raises_market_data_error(self):
+        """An is_error tool result (quota/auth) must raise, not return empty data."""
+        source = TapetideDataSource(api_key="k", price_cache=PriceCache(), poll_interval=60.0)
+        source._client = _error_client()
+        with pytest.raises(MarketDataError):
+            await source._call_batch_quotes(["TCS"])
+
+    async def test_validate_tool_error_is_transport_not_not_found(self):
+        """A tool error on validate is a transport failure (-> 503), not False (-> 400)."""
+        source = TapetideDataSource(api_key="k", price_cache=PriceCache(), poll_interval=60.0)
+        source._client = _error_client()
+        with pytest.raises(MarketDataError):
+            await source.validate_ticker("TCS")
+
+    async def test_tool_error_during_poll_counts_as_failure(self):
+        """A frozen feed caused by tool errors must arm the fallback, not reset the streak."""
+        source = TapetideDataSource(api_key="k", price_cache=PriceCache(), poll_interval=60.0)
+        source._tickers = ["TCS"]
+        source._client = _error_client()
+        for _ in range(3):
+            await source._poll_once()
+        assert source.is_degraded()
+
+    async def test_call_timeout_raises_market_data_error(self, monkeypatch):
+        """A call slower than TAPETIDE_CALL_TIMEOUT becomes a counted failure, not a hang."""
+        source = TapetideDataSource(api_key="k", price_cache=PriceCache(), poll_interval=60.0)
+
+        async def _slow(*_a, **_k):
+            await asyncio.sleep(1)
+
+        client = MagicMock()
+        client.call_tool = _slow
+        source._client = client
+        monkeypatch.setattr("app.market.tapetide_client.TAPETIDE_CALL_TIMEOUT", 0.01)
+        with pytest.raises(MarketDataError):
+            await source._call_batch_quotes(["TCS"])
+
+    async def test_quote_for_removed_ticker_not_written_back(self):
+        """A quote whose ticker is no longer tracked (removed mid-poll) is skipped."""
+        cache = PriceCache()
+        source = TapetideDataSource(api_key="k", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["RELIANCE"]
+        # The response carries a ticker that is not in the current tracked set.
+        source._client = _mock_client([_quote("GONE", 100.0, "2026-10-16T10:00:00+00:00")])
+
+        await source._poll_once()
+
+        assert cache.get_price("GONE") is None
 
     async def test_naive_timestamp_assumed_ist(self):
         from datetime import datetime

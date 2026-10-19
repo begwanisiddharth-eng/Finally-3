@@ -19,6 +19,12 @@ this file as components land. Always confirm against the filesystem — this fil
   `TapetideDataSource` counts consecutive poll failures (N=3) and treats a dead poll task as
   degraded; `MarketDataManager` falls back to the simulator and holds a `_force_fallback` /
   `_retry_after` latch (5-min cooldown) so it cannot flap. The supervisor ticks at least every 5s.
+- **Tapetide error-handling hardening** (§6, from `MARKET_DATA_REVIEW.md`) — tool calls go through
+  `_call_tool`, which inspects `CallToolResult.is_error` (quota/auth/server errors now raise
+  `TapetideToolError`/`MarketDataError` instead of reading as empty data), applies a per-call
+  `TAPETIDE_CALL_TIMEOUT` (10s) so a hung call cannot hold the shared lock, and skips a quote whose
+  ticker was removed mid-poll. `create_stream_router` builds its router per call (no shared
+  module-level router).
 - **`backend/app/main.py`** — FastAPI entrypoint: `load_dotenv()`, repo-root path resolution
   (§11), lifespan init/shutdown ordering (§7), `MarketDataManager` wiring, all API routers, the
   normalized `{"error": ...}` envelope, SSE route reading the cache from `app.state`, and the
@@ -34,8 +40,8 @@ this file as components land. Always confirm against the filesystem — this fil
   against the real Groq API and in mock mode.
 - **`scripts/`** — `start`/`stop` for macOS/Linux and Windows (§11): .env bootstrap, GROQ check
   (skipped under `LLM_MOCK`), already-running/stale-PID handling, health poll. Idempotent.
-- **Backend + API test suite** — `uv run --extra dev pytest` → 136 passed (119 market +
-  17 API integration via FastAPI TestClient running the lifespan).
+- **Backend + API test suite** — `uv run --extra dev pytest` → 144 passed (125 market +
+  19 API integration via FastAPI TestClient running the lifespan).
 - **`db/.gitkeep`** — top-level runtime DB directory placeholder.
 - **Repo scaffolding** — `.github/` CI workflows, `.gitignore`, `.env.example`, both READMEs,
   `backend/pyproject.toml` (+ `uv.lock`), `backend/market_data_demo.py`.

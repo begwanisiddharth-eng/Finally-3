@@ -56,7 +56,7 @@ MarketDataManager (owns the active source, supervises handover)
 
 ## Test Suite
 
-8 test modules in `backend/tests/market/`.
+10 test modules in `backend/tests/market/` (125 tests).
 
 | Module | Covers |
 |--------|--------|
@@ -64,10 +64,12 @@ MarketDataManager (owns the active source, supervises handover)
 | test_cache.py | `cache.py`, including `previous_close` carry-forward/override |
 | test_simulator.py | `GBMSimulator` math, sector correlation, seeding |
 | test_simulator_source.py | `SimulatorDataSource` integration |
-| test_tapetide.py | `TapetideDataSource` (mocked MCP client): polling, batching over 20 symbols, unrecognized-ticker handling, requested-vs-resolved-symbol cache keying, `prev_close` passthrough, validation |
+| test_tapetide.py | `TapetideDataSource` (mocked MCP client): polling, batching over 20 symbols, unrecognized-ticker handling, requested-vs-resolved-symbol cache keying, `prev_close` passthrough, validation, `is_error` tool-error handling, per-call timeout, mid-poll removal guard |
+| test_degraded.py | Degraded mode: N consecutive failures and dead-task detection, manager fallback to the simulator, cooldown latch (suppress flap, retry after cooldown, re-arm) |
 | test_factory.py | Source selection by API key presence + trading hours |
 | test_nse_hours.py | `is_nse_trading_hours()` boundaries, weekends, timezone conversion |
 | test_manager.py | `MarketDataManager`: handover in both directions, ticker-list preservation across handover, seeding from cached real price, no-op when the desired source is unchanged, supervisor loop triggers handover |
+| test_stream.py | `create_stream_router` returns an independent router per call (one `/prices` route each) |
 
 ## Demo
 

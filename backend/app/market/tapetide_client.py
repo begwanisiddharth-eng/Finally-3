@@ -26,7 +26,20 @@ logger = logging.getLogger(__name__)
 TAPETIDE_MCP_URL = "https://mcp.tapetide.com/mcp"
 DEFAULT_MAX_FAILURES = 3  # consecutive failures before the source reports degraded
 BATCH_SIZE = 20  # get_batch_quotes accepts at most 20 symbols per call
+TAPETIDE_CALL_TIMEOUT = 10.0  # hard cap per tool call (seconds), so a hang becomes a failure
 IST = ZoneInfo("Asia/Kolkata")
+
+
+class TapetideToolError(MarketDataError):
+    """Tapetide was reached, but the tool call returned is_error=True (quota, auth,
+    server error). A MarketDataError, so the API maps it to 503 ("couldn't check"),
+    never a 400 "no such ticker" (PLAN.md section 6)."""
+
+
+def _error_text(result) -> str:
+    """Extract a human-readable message from an is_error CallToolResult."""
+    parts = [getattr(c, "text", "") for c in (result.content or [])]
+    return " ".join(p for p in parts if p) or "unknown tool error"
 
 
 def _parse_timestamp(value: str) -> float:
@@ -130,15 +143,13 @@ class TapetideDataSource(MarketDataSource):
         "add X and buy 10" flow, §9) has a fill price without waiting for the
         next poll.
         """
-        if not self._client:
-            raise MarketDataError("Tapetide client is not connected")
-        try:
-            result = await self._call_batch_quotes([ticker.upper().strip()])
-        except Exception as e:
-            raise MarketDataError(f"Tapetide validation transport failure: {e}") from e
-        if not result or not result[0].get("found", False):
+        # _call_batch_quotes raises MarketDataError on any failure (no client,
+        # timeout, transport error, or an is_error tool result), so a transport
+        # or quota problem surfaces as 503, never as a false "not found" 400.
+        quotes = await self._call_batch_quotes([ticker.strip().upper()])
+        if not quotes or not quotes[0].get("found", False):
             return False
-        self._cache_quote(result[0])
+        self._cache_quote(quotes[0])
         return True
 
     # --- Internal ---
@@ -148,7 +159,7 @@ class TapetideDataSource(MarketDataSource):
         try:
             async with httpx2.AsyncClient(
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=httpx2.Timeout(30.0, read=300.0),
+                timeout=httpx2.Timeout(30.0, read=60.0),
             ) as http_client:
                 transport = streamable_http_client(TAPETIDE_MCP_URL, http_client=http_client)
                 async with Client(transport) as client:
@@ -166,21 +177,25 @@ class TapetideDataSource(MarketDataSource):
 
     async def _poll_once(self) -> None:
         """Fetch quotes for all tracked tickers (batched) and update the cache."""
-        if not self._tickers:
+        tickers = list(self._tickers)  # snapshot: add/remove may run mid-poll
+        if not tickers:
             return
 
         poll_failed = False
-        for i in range(0, len(self._tickers), BATCH_SIZE):
-            batch = self._tickers[i : i + BATCH_SIZE]
+        for i in range(0, len(tickers), BATCH_SIZE):
+            batch = tickers[i : i + BATCH_SIZE]
             try:
                 quotes = await self._call_batch_quotes(batch)
-            except Exception as e:
+            except MarketDataError as e:
                 logger.error("Tapetide poll failed for batch %s: %s", batch, e)
                 poll_failed = True
                 continue
 
             for quote in quotes:
-                self._cache_quote(quote)
+                # A ticker removed mid-poll must not be written back into the
+                # cache (would leave a ghost row in the SSE frame).
+                if quote.get("requested", "").upper() in self._tickers:
+                    self._cache_quote(quote)
 
         # One failure per poll cycle, however many batches failed; a fully
         # successful cycle resets the streak.
@@ -211,11 +226,37 @@ class TapetideDataSource(MarketDataSource):
             logger.warning("Skipping malformed quote for %s: %s", ticker, e)
             return False
 
+    async def _call_tool(self, name: str, arguments: dict) -> dict:
+        """One serialized, time-bounded tool call. Returns structured_content (or {}).
+
+        The MCP SDK does not raise on a tool-level failure: `call_tool` returns a
+        CallToolResult with `is_error=True`. If that is not inspected, a quota/auth
+        error looks like empty data (never counted as a failure, feed freezes
+        silently) and `validate_ticker` answers False -> a wrong 400 instead of
+        503 (PLAN.md section 6). So this wrapper raises MarketDataError for a
+        missing client, timeout, transport exception, or an is_error result.
+        """
+        client = self._client
+        if client is None:
+            raise MarketDataError("Tapetide client is not connected")
+        async with self._call_lock:
+            try:
+                result = await asyncio.wait_for(
+                    client.call_tool(name, arguments), timeout=TAPETIDE_CALL_TIMEOUT
+                )
+            except TimeoutError as e:
+                raise MarketDataError(
+                    f"Tapetide {name} timed out after {TAPETIDE_CALL_TIMEOUT}s"
+                ) from e
+            except MarketDataError:
+                raise
+            except Exception as e:  # httpx transport errors, MCPError, ValidationError
+                raise MarketDataError(f"Tapetide {name} failed: {e}") from e
+        if result.is_error:
+            raise TapetideToolError(f"Tapetide {name} returned an error: {_error_text(result)}")
+        return result.structured_content or {}
+
     async def _call_batch_quotes(self, symbols: list[str]) -> list[dict]:
         """Call the get_batch_quotes tool and return its `data` list."""
-        if not self._client:
-            return []
-        async with self._call_lock:
-            result = await self._client.call_tool("get_batch_quotes", {"symbols": symbols})
-        payload = result.structured_content
-        return payload.get("data", []) if payload else []
+        payload = await self._call_tool("get_batch_quotes", {"symbols": symbols})
+        return payload.get("data", [])

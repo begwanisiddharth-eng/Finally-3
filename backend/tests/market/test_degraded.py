@@ -25,6 +25,7 @@ def _failing_source(max_failures: int = 3) -> TapetideDataSource:
 def _ok_client() -> MagicMock:
     client = MagicMock()
     result = MagicMock()
+    result.is_error = False  # unset MagicMock attr is truthy -> would read as a tool error
     result.structured_content = {
         "data": [
             {

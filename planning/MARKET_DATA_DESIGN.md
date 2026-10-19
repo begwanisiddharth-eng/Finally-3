@@ -27,6 +27,20 @@ Every section is tagged:
 - **[NEW]** — does not exist yet. Code is a complete, drop-in starting point.
 - **[OPTIONAL]** — not required by PLAN.md; design kept so nobody re-derives it.
 
+> **Implementation status (updated 2026-10-19, after `MARKET_DATA_REVIEW.md`).** The Tapetide
+> error-handling hardening in this document is **now implemented**: the `is_error` tool-error
+> wrapper (§9.3, as `_call_tool` raising `TapetideToolError`/`MarketDataError`), the per-call
+> timeout (§9.4, `TAPETIDE_CALL_TIMEOUT`), the mid-poll removal guard (§9.4), and the SSE
+> router-per-call fix (§12.1). The following §/items were **intentionally realized differently**
+> and are equivalent, not pending: the `desired_source_name()`/`build_source()` factory split
+> (§10) — the shipped `factory.create_market_data_source` + `manager` cover the same decisions;
+> the 1s health tick and split `_maybe_fallback`/`_swap_locked` (§11) — the shipped `manager`
+> uses a ~5s combined tick with the same latch semantics (tested in `test_degraded.py`); the
+> monotonic `last_write_age` (§5.2) — shipped as `PriceCache.seconds_since_update()`; and the
+> standalone `health.py`/`tracking.py` modules (§14.3/§14.4) — their logic lives inline in the
+> backend's `routes/health.py`, `portfolio.py`, and `watchlist.py`. Treat the code as source of
+> truth where it differs.
+
 ---
 
 ## Table of Contents
@@ -65,14 +79,14 @@ Every market-data requirement in PLAN.md, where it lives, and whether it exists.
 | Tapetide over MCP streamable HTTP, Bearer token, `get_batch_quotes` (§6) | `tapetide_client` | BUILT |
 | Batches of ≤20, cache keyed by `requested` (§6) | `TapetideDataSource._poll_once/_cache_quote` | BUILT |
 | All Tapetide calls serialized by an `asyncio.Lock` (§6) | `_call_lock` | BUILT |
-| `validate_ticker` raises `MarketDataError` on transport failure (§6) | `interface`, `tapetide_client` | BUILT, **[CHANGE]** §9.4 (tool-error results) |
+| `validate_ticker` raises `MarketDataError` on transport failure (§6) | `interface`, `tapetide_client` | BUILT (incl. `is_error` tool-error → `MarketDataError`, §9.3) |
 | Successful Tapetide validation seeds the cache (§6) | `validate_ticker` → `_cache_quote` | BUILT |
 | Naive upstream timestamps parsed as IST (§7) | `_parse_timestamp` | BUILT |
 | `MARKET_DATA_SOURCE` auto/simulator/tapetide (§5) | `factory` | BUILT, **[CHANGE]** §10 (split for the latch) |
 | NSE hours 9:15-15:30 IST Mon-Fri, explicit IST conversion (§5) | `nse_hours` | BUILT |
 | Live handover every ~60s, cache never replaced (§6) | `MarketDataManager._supervise` | BUILT, **[CHANGE]** §11 |
 | `previous_close` carry-forward; day vs tick change (§6) | `PriceCache.update`, `PriceUpdate` | BUILT |
-| SSE pushes whole map when version advances, ~500ms cadence (§6) | `stream` | BUILT, **[CHANGE]** §12 (router-per-call) |
+| SSE pushes whole map when version advances, ~500ms cadence (§6) | `stream` | BUILT (router-per-call fix applied, §12.1) |
 | `TAPETIDE_POLL_SECONDS` named constant, default 2 (§6) | `tapetide_client` | **[NEW]** §9.2 |
 | One-time budget warning when Tapetide starts polling (§6) | `TapetideDataSource._run` | **[NEW]** §9.3 |
 | N=3 consecutive failures (poll errors **and** dead task) → fallback (§6) | `TapetideDataSource.is_degraded` | **[NEW]** §9.5 |
