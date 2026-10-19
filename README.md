@@ -8,8 +8,8 @@ Built entirely by coding agents as a capstone project for an agentic AI coding c
 
 Work in progress. See [`planning/STATUS.md`](planning/STATUS.md) for what is built.
 
-- **Done**: market data subsystem (simulator, Tapetide client, live handover) and its tests, in `backend/`
-- **To build**: API and database, LLM chat, frontend, start/stop scripts, E2E tests
+- **Done**: market data subsystem (simulator, Tapetide client, live handover) and its test suite (107 tests), in `backend/`
+- **To build**: FastAPI app (`main.py`), database, API, LLM chat, frontend, start/stop scripts, E2E tests, Tapetide failure fallback to the simulator
 
 The Quick Start below describes the target experience and will work once the remaining pieces land.
 
@@ -42,10 +42,10 @@ Single local process serving everything on port 8000, no Docker:
 
 ```bash
 ./scripts/start_mac.sh        # macOS/Linux
-./scripts/start_windows.ps1   # Windows
+.\scripts\start_windows.ps1   # Windows (PowerShell)
 ```
 
-The script creates `.env` from `.env.example` if missing (set `GROQ_API_KEY` in it), builds the frontend, starts the backend, and prints the URL: http://localhost:8000. Use `scripts/stop_*` to stop; the database persists across runs.
+The script creates `.env` from `.env.example` if missing (set `GROQ_API_KEY` in it), builds the frontend, starts the backend, and prints the URL: http://localhost:8000. Use `scripts/stop_mac.sh` or `scripts/stop_windows.ps1` to stop; the database persists across runs. Pass `--build` to force a frontend rebuild.
 
 ## Backend Development
 
