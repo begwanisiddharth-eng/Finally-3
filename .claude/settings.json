@@ -2,18 +2,7 @@
   "enabledPlugins": {
     "frontend-design@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
-    "playwright@claude-plugins-official": true
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type":"command",
-            "command": "opencode run \"Carry out  a comprehensive review of all the changes since the last commit and write your observations to planning/REVIEW.md\""
-          }
-        ]
-      }
-    ]
+    "playwright@claude-plugins-official": true,
+    "independent-reviewer@Sids-plugins": true
   }
 }
