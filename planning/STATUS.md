@@ -15,7 +15,11 @@ this file as components land. Always confirm against the filesystem — this fil
   `asyncio.Lock`; naive upstream timestamps parsed as IST; `validate_ticker` raises
   `MarketDataError` on transport failure (vs. returning a false "not found"). See
   `planning/MARKET_DATA_SUMMARY.md` for detail.
-- **Backend test suite** (`backend/tests/market/`) — 8 modules, `uv run pytest` → 107 passed.
+- **Tapetide degraded-mode fallback** (§6) — `MarketDataSource.is_degraded()`;
+  `TapetideDataSource` counts consecutive poll failures (N=3) and treats a dead poll task as
+  degraded; `MarketDataManager` falls back to the simulator and holds a `_force_fallback` /
+  `_retry_after` latch (5-min cooldown) so it cannot flap. The supervisor ticks at least every 5s.
+- **Backend test suite** (`backend/tests/market/`) — 9 modules, `uv run --extra dev pytest` → 119 passed.
 - **Repo scaffolding** — `.github/` CI workflows, `.gitignore`, `.env.example`, both READMEs,
   `backend/pyproject.toml` (+ `uv.lock`), `backend/market_data_demo.py`.
 
@@ -23,9 +27,7 @@ this file as components land. Always confirm against the filesystem — this fil
 
 - **`backend/app/main.py`** — FastAPI entrypoint: `load_dotenv()`, repo-root path resolution
   (§11), lifespan init/shutdown ordering (§7), `MarketDataManager` wiring, API routers, static
-  mount. Also hosts the Tapetide degraded-mode fallback — the `_force_fallback` + `retry_after`
-  cooldown latch on the manager (§6, N=3, 5-min cooldown) — which is specified but not yet coded;
-  and the API mapping of `MarketDataError` to `503` on the validation path (§6/§8).
+  mount. Also the API mapping of `MarketDataError` to `503` on the validation path (§6/§8).
   Implementation-ready spec for the remaining market-data work (degraded-mode counter + latch,
   MCP tool-error detection, call timeouts, health freshness, SSE router fix, tracked-ticker
   helpers): `planning/MARKET_DATA_DESIGN.md` §18.
