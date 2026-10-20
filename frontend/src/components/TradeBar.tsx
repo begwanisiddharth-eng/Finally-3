@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useAppData } from "@/providers/AppDataProvider";
 
@@ -18,9 +18,14 @@ export default function TradeBar({ selected }: { selected: string | null }) {
     const held = (portfolio?.positions ?? []).map((p) => p.ticker);
     return Array.from(new Set([...watchlist.map((w) => w.ticker), ...held]));
   }, [watchlist, portfolio]);
-  const [qty, setQty] = useState("1");
+  const [qty, setQty] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  // Clear the quantity whenever a new ticker is selected from the watchlist.
+  useEffect(() => {
+    setQty("");
+  }, [selected]);
 
   const flash = (text: string, ok: boolean) => {
     setMsg({ text, ok });
