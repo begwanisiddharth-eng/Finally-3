@@ -939,6 +939,15 @@ it goes stale; a decision worth keeping belongs in the plan, not behind an exter
   the simulator seeds on `add_ticker`, making the one-turn "add X and buy 10" flow reliable. A
   trade on a tracked-but-still-unpriced ticker is rejected with a clear `400` rather than filling
   at `null`/`0`.
+- **Price-flash background removed (user preference)** — the per-tick green/red flash behind
+  watchlist prices (originally §2/§10) was removed at the user's request as hard on the eyes;
+  tick-over-tick direction is no longer shown there (day-change colour and the sparkline remain).
+  The `useFlash` hook and its unit test were deleted, so §12's price-flash test item no longer
+  applies.
+- **Chart time axes render in IST, HH:MM (§10)** — Lightweight Charts renders times in UTC by
+  default; `LineChart` formats axis ticks and the crosshair as IST `HH:MM` via
+  `tickMarkFormatter`/`localization.timeFormatter`. The main chart fills its panel (a `fill` prop,
+  height 100% instead of a fixed 300px) so its time axis is never clipped by a shorter container.
 - **Stale-feed (market-holiday) detection falls back to the simulator (§6)** — the NSE-hours check
   (§5) is weekday/clock only and does not know holidays, so on a holiday within 9:15–3:30 IST
   Tapetide stays the desired source but returns *successful* quotes whose `updated_at` is a prior
