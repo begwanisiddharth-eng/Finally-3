@@ -188,3 +188,21 @@ def test_chat_appends_sebi_disclaimer_under_tapetide(client, monkeypatch):
     )
     r = client.post("/api/chat", json={"message": "how is my portfolio"})
     assert "SEBI-registered" in r.json()["message"]
+
+
+def test_chat_upstream_failure_returns_502_and_persists_nothing(client, monkeypatch):
+    # Simulate Groq timing out / erroring / returning unparseable output.
+    import app.chat as chat_mod
+
+    async def _boom(*_args, **_kwargs):
+        raise chat_mod.ChatError("upstream exploded")
+
+    monkeypatch.setattr(chat_mod, "_generate", _boom)
+
+    before = len(client.get("/api/chat/history").json())
+    r = client.post("/api/chat", json={"message": "how is my portfolio"})
+    assert r.status_code == 502
+    assert "error" in r.json()
+    # No chat_messages row is written on an upstream failure (section 8).
+    after = len(client.get("/api/chat/history").json())
+    assert after == before

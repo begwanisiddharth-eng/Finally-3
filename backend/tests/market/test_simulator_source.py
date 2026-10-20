@@ -111,18 +111,34 @@ class TestSimulatorDataSource:
         await source.stop()
 
     async def test_custom_update_interval(self):
-        """Test using a custom update interval."""
-        cache = PriceCache()
-        source = SimulatorDataSource(price_cache=cache, update_interval=0.01)
-        await source.start(["AAPL"])
+        """A shorter update_interval yields more ticks than a longer one over
+        the same wall-clock window.
 
-        initial_version = cache.version
-        await asyncio.sleep(0.05)  # Should get ~5 updates
+        Asserting the relative tick rate (rather than a hard-coded count)
+        verifies the custom interval is honored without depending on the host
+        timer resolution (Windows' ~15.6ms would make a fixed-count assertion
+        at a 10ms interval flaky).
+        """
+        window = 0.3
+        fast_cache = PriceCache()
+        slow_cache = PriceCache()
+        fast = SimulatorDataSource(price_cache=fast_cache, update_interval=0.01)
+        slow = SimulatorDataSource(price_cache=slow_cache, update_interval=0.1)
 
-        # Should have multiple updates with fast interval
-        assert cache.version > initial_version + 2
+        await fast.start(["AAPL"])
+        await slow.start(["AAPL"])
 
-        await source.stop()
+        # Baselines after the immediate seed, before the timed window.
+        fast_start = fast_cache.version
+        slow_start = slow_cache.version
+        await asyncio.sleep(window)
+        fast_ticks = fast_cache.version - fast_start
+        slow_ticks = slow_cache.version - slow_start
+
+        await fast.stop()
+        await slow.stop()
+
+        assert fast_ticks > slow_ticks
 
     async def test_custom_event_probability(self):
         """Test creating source with custom event probability."""
