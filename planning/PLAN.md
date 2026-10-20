@@ -356,7 +356,10 @@ tables are missing, it creates the schema and seeds default data. This means:
 
 The lifespan performs these steps in order, before serving:
 
-1. Initialize the database and seed defaults (idempotent — safe if the file already exists).
+1. Initialize the database and seed defaults (idempotent — safe if the file already exists), then
+   clear any `chat_messages` rows so each app start begins with a **blank chat** — a page reload
+   *within* a running session still repopulates from `/api/chat/history` (§8), but a fresh launch
+   never surfaces the previous session's conversation.
 2. Load the profile, watchlist, and positions.
 3. Start `MarketDataManager` with the **union** of watchlist and held tickers (§6) — a held ticker not on the watchlist is still priced.
 4. Start the 30-second portfolio-snapshot background task.
@@ -501,6 +504,15 @@ and Tapetide's `validate_ticker` seeds it on a successful add (§6), so the one-
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check (used by start scripts to confirm the backend is ready) |
+| POST | `/api/reset` | Reset to a first-launch state (see below) |
+
+`POST /api/reset` restores the application to how it looks on a first-ever launch: cash back to
+Rs 10,00,000, **all** positions, trades, portfolio snapshots, and chat messages deleted, and the
+default 10-ticker watchlist re-seeded (in order). It then reconciles the live price feed so it
+tracks exactly the default watchlist (dropping any user-added or held-only tickers) and writes one
+fresh startup snapshot so the Portfolio Value chart has a point immediately. It returns the reset
+`GET /api/portfolio` payload (§8 Response Shapes). This is the backend half of the header **Reset**
+button (§10); the frontend seeks an explicit in-app confirmation before calling it.
 
 ### Request/Response Semantics
 
@@ -766,22 +778,22 @@ must use a real symbol (e.g. WIPRO) to observe a success.
 
 The frontend is a single-page application with a dense, terminal-inspired layout. The specific component architecture and layout system is up to the Frontend Engineer, but the UI should include these elements:
 
-- **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on tick-over-tick change, §6), daily change % (`day_change_percent` from the SSE payload, §6 — under the simulator this reads as change since the current demo session started, not a literal exchange-day change), and a sparkline mini-chart (accumulated from SSE since page load). The panel's **membership comes from `GET /api/watchlist`**; the SSE stream carries the entire cache — including held-but-unwatched tickers (§6) — and supplies prices only. Never add a watchlist row just because a ticker appears in the SSE payload.
-- **Main chart area** — larger chart for the currently selected ticker, with at minimum price over time. Clicking a ticker in the watchlist selects it here. **Explicitly live-since-load, not historical**: there is no price-history endpoint or backing storage (a deliberate scope decision — see §13), so this chart uses the same SSE-accumulated buffer as that ticker's sparkline, just rendered larger. It starts empty on every page load and for any ticker just added, filling in as ticks arrive; it is not expected to show pre-load history.
-- **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss). **Weight uses a positions-only denominator**: rectangle size = `position_market_value / sum(all position market values)`, excluding cash (the conventional treemap choice). Cash is shown in the header, not the heatmap.
-- **P&L chart** — line chart showing **total portfolio value** (cash + positions) over time, using data from `portfolio_snapshots`. Despite the "P&L" label it plots total value, not cumulative P&L (§8 `GET /api/portfolio/history`).
-- **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
-- **Recent trades panel** — a compact, read-only list of the latest trades from `GET /api/portfolio/trades` (ticker, side, quantity, price, time), most recent first. This is the UI consumer of that endpoint (§8).
-- **Trade bar** — simple input area: ticker field, quantity field, buy button, sell button. Market orders, instant fill. The quantity field accepts decimal input (schema supports fractional shares, §7); the API rejects a quantity that is zero or negative with the standard `400` error shape (§8).
-- **AI chat panel** — docked/collapsible sidebar. Loads prior messages from `GET /api/chat/history` on mount (§8), so a page reload doesn't show an empty panel. Message input, scrolling conversation history, loading indicator while waiting for LLM response. The input is disabled while a request is pending (single-user, but two tabs could otherwise interleave turns). Trade executions and watchlist changes shown inline as confirmations. **After any chat turn whose response `actions` array is non-empty, the frontend refetches `GET /api/portfolio` and `GET /api/watchlist`** so the positions table, heatmap, header totals, and watchlist membership reflect AI-executed changes (the chat response carries only `message` + `actions`, no portfolio payload, and SSE carries prices only).
-- **Header** — portfolio total value (updating live), connection status indicator (reflects the SSE connection), a **data-source badge** ("LIVE (NSE)" vs "SIMULATED", from `data_source` in `GET /api/health`) so the user can tell whether prices are real — the same distinction the SEBI disclaimer hinges on (§9), a **data-freshness indicator**, and cash balance. The SSE connection can stay green while prices freeze (e.g. Tapetide polls failing before fallback, §6), so the freshness indicator shows the last-updated time or a "stale" badge driven by `market_data_healthy` from `GET /api/health` (§8) — distinct from the connection dot. The frontend polls `GET /api/health` every ~5s for both the badge and the freshness state (health is not part of the SSE stream); a health response older than the `market_data_healthy` window (~10s, §6) is itself treated as stale.
+- **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (the per-tick green/red flash was removed at the user's request, §13), daily change % (`day_change_percent` from the SSE payload, §6 — under the simulator this reads as change since the current demo session started, not a literal exchange-day change, and is the cell's colour), and a sparkline mini-chart (accumulated from SSE since page load). Each row has an **× remove control**; selecting a row sets it as the main chart's ticker. The panel's **membership comes from `GET /api/watchlist`**; the SSE stream carries the entire cache — including held-but-unwatched tickers (§6) — and supplies prices only. Never add a watchlist row just because a ticker appears in the SSE payload.
+- **Main chart area** — larger chart for the currently selected ticker, with at minimum price over time. Clicking a ticker in the watchlist selects it here; removing the selected ticker re-points the chart to the first remaining watchlist row. **Explicitly live-since-load, not historical**: there is no price-history endpoint or backing storage (a deliberate scope decision — see §13), so this chart uses the same SSE-accumulated buffer as that ticker's sparkline, just rendered larger. It starts empty on every page load and for any ticker just added, filling in as ticks arrive; it is not expected to show pre-load history. The panel **fills the remaining vertical space** (a flex child with a minimum height) so the two bottom rows (positions, recent trades) always show their rows, and its time axis renders in **IST HH:MM** (§13).
+- **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss). **Weight uses a positions-only denominator**: rectangle size = `position_market_value / sum(all position market values)`, excluding cash (the conventional treemap choice). Cash is shown in the header, not the heatmap. The rectangles **tile the entire panel area** via a squarified treemap layout (not a single-row strip).
+- **P&L chart** — line chart showing **total portfolio value** (cash + positions) over time, using data from `portfolio_snapshots`. Despite the "P&L" label it plots total value, not cumulative P&L (§8 `GET /api/portfolio/history`). Rendered as a plain **line (no area fill)** over a rolling **60-minute window** (30s snapshots, ≤120 points); x-axis in IST HH:MM.
+- **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change. Capped to **~5 visible rows** with the column header pinned (sticky); additional positions scroll within the panel, and money cells do not wrap.
+- **Recent trades panel** — a compact, read-only list of the latest trades from `GET /api/portfolio/trades` (ticker, side, quantity, price, time), most recent first. This is the UI consumer of that endpoint (§8). Capped to **~5 visible rows** (fixed height, scrolls internally) so a growing trade log never pushes the chart.
+- **Trade bar** — market-order entry: a **ticker selector** (a dropdown of watchlist ∪ held symbols — so a held-but-unwatched position can still be sold), a quantity field, buy and sell buttons. Instant fill. The quantity field accepts decimal input (schema supports fractional shares, §7); the API rejects a quantity that is zero or negative with the standard `400` error shape (§8). The quantity field **clears whenever a new ticker is selected from the watchlist**.
+- **AI chat panel** — docked/collapsible sidebar. Loads prior messages from `GET /api/chat/history` on mount (§8), so a page reload doesn't show an empty panel; it starts blank on a fresh app launch (§7) and is **cleared by Reset** (§8). Message input, scrolling conversation history, loading indicator while waiting for LLM response. The input is disabled while a request is pending (single-user, but two tabs could otherwise interleave turns) and **focus returns to the input after each response**. Trade executions and watchlist changes shown inline as confirmations. **After any chat turn whose response `actions` array is non-empty, the frontend refetches `GET /api/portfolio` and `GET /api/watchlist`** so the positions table, heatmap, header totals, and watchlist membership reflect AI-executed changes (the chat response carries only `message` + `actions`, no portfolio payload, and SSE carries prices only).
+- **Header** — **cash, equity (value of held positions), and total value** shown side by side and updating live, a connection status indicator (reflects the SSE connection), a **data-source badge** ("LIVE (NSE)" vs "SIMULATED", from `data_source` in `GET /api/health`) so the user can tell whether prices are real — the same distinction the SEBI disclaimer hinges on (§9), a **data-freshness indicator**, and a prominent **Reset** button (top-right) that restores the first-launch state after an in-app confirmation dialog (§8 `POST /api/reset`, §13). The SSE connection can stay green while prices freeze (e.g. Tapetide polls failing before fallback, §6), so the freshness indicator shows the last-updated time or a "stale" badge driven by `market_data_healthy` from `GET /api/health` (§8) — distinct from the connection dot. The frontend polls `GET /api/health` every ~5s for both the badge and the freshness state (health is not part of the SSE stream); a health response older than the `market_data_healthy` window (~10s, §6) is itself treated as stale.
 
 ### Technical Notes
 
 - Use `EventSource` for SSE connection to `/api/stream/prices`
 - **One charting library: Lightweight Charts** for the time-series charts (sparklines, main chart, P&L chart) — canvas-based, built for financial time series. The portfolio heatmap (§2) is **rendered directly** with styled DOM/SVG boxes, not a charting library: each position is an absolutely-positioned (or flex) rectangle sized by its normalized weight and tinted by P&L. A positions heatmap is a handful of rectangles with a simple slice layout, so pulling in a second charting library (e.g. Recharts' `Treemap`) just for it is unwarranted weight — dropped in favor of a small self-rendered component. See §13.
 - Lightweight Charts requires **strictly ascending, unique** time values, but two SSE updates can carry the same Unix second. The frontend must aggregate the live buffer to **one point per second (last price wins)** — or map to a monotonically increasing sequence — before feeding the SSE-fed charts (sparkline and main chart); otherwise the library throws or silently drops points. (The P&L chart is sourced from `portfolio_snapshots` at a 30s cadence — already strictly ascending and unique — so it is not on the SSE buffer and needs no such aggregation.) The accumulated buffer is page-lifetime and unbounded, so cap it (e.g. keep the last N points) if long sessions matter.
-- Price flash effect: flash only when the price actually moved — trigger on `direction != "flat"` (equivalently `change != 0`), **not** on every SSE frame (frames repeat even when nothing changed, §6). On a move, briefly apply a CSS class with a ~250ms background color transition, then remove it (§2 — shorter than the ~500ms simulator tick so flashes don't overlap). As a result, flashes are naturally sparse for low-priced tickers whose 2-dp price rarely changes per tick (§13), which is expected.
+- Price flash effect: **removed** at the user's request (§13) — the per-tick green/red background behind watchlist prices is no longer rendered. Day-change colour and the sparkline convey direction instead; the `useFlash` hook and its test were deleted.
 - All API calls go to the same origin (`/api/*`) — no CORS configuration needed
 - Tailwind CSS for styling with a custom dark theme
 
@@ -861,11 +873,10 @@ Cloud/container deployment (AWS App Runner, Render, etc.) is explicitly out of s
 - Market data: simulator generates valid prices, GBM math is correct, Tapetide MCP response parsing works, NSE-trading-hours gating selects the right source, both implementations conform to the abstract interface, `MarketDataManager` hands over between sources in both directions without losing tracked tickers or interrupting the shared cache, `active_source_name` returns the plan's `'tapetide'`/`'simulator'` labels, the factory honors `MARKET_DATA_SOURCE`, and (once built) the manager falls back to the simulator after N consecutive Tapetide failures (§6)
 - Portfolio: trade execution logic, P&L calculations, edge cases (selling more than owned, buying with insufficient cash, selling at a loss); selling a held-but-unwatched position to zero stops its price tracking (§6, "Tracked Tickers")
 - LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow, deterministic action ordering (adds → trades → removals, §9), and the SEBI disclaimer appended verbatim under `data_source="tapetide"` and omitted under `"simulator"`
-- API routes: correct status codes, response shapes, error handling (including the normalized `{"error": ...}` envelope for 422/500, §8)
+- API routes: correct status codes, response shapes, error handling (including the normalized `{"error": ...}` envelope for 422/500, §8), and `POST /api/reset` restoring first-launch state (cash, empty positions/trades/chat, default watchlist, a fresh snapshot)
 
 **Frontend (Vitest + React Testing Library)**:
 - Component rendering with mock data
-- Price flash: the flash CSS class is toggled on `direction != "flat"` and not on an unchanged frame (jsdom can't observe the CSS transition itself, so the test asserts the class toggle / trigger, not the visual fade)
 - Watchlist CRUD operations
 - Portfolio display calculations
 - Chat message rendering and loading state
@@ -961,3 +972,26 @@ it goes stale; a decision worth keeping belongs in the plan, not behind an exter
   timestamp is used so an illiquid single ticker can't trip it during live trading, where at least
   one liquid name updates within seconds. Chosen over the alternative "same price across N polls"
   signal: the timestamp is immediate (one cycle), unambiguous, and false-positive-free.
+- **Reset to first-launch state (§8, §10)** — a header **Reset** button and `POST /api/reset` wipe
+  cash/positions/trades/snapshots/chat and restore the default watchlist, reconcile the live feed
+  to that watchlist, and take a fresh snapshot. The frontend also clears the SSE-accumulated chart
+  buffers so the main chart and sparklines restart, matching a real relaunch. Confirmation is an
+  **in-app modal**, not a native `window.confirm` — cleaner and it does not block the E2E run.
+- **Chat starts blank on each app launch (§7)** — the lifespan clears `chat_messages` at startup
+  so a new session never shows the prior session's conversation; a reload *within* a running
+  session still repopulates from `/api/chat/history`. Chosen over keeping history across launches.
+- **Header shows cash, equity and total (§10)** — equity (value of held positions) was added
+  between cash and total value, so the three sit side by side.
+- **Portfolio Value is a 60-minute line (§10)** — plain line (no area fill) over the last 60 min of
+  30s snapshots, replacing the area style that read as filled/noisy.
+- **Positions and Recent Trades cap at ~5 rows (§10)** — fixed-height panels that scroll internally
+  (Positions keeps a sticky header), so a growing trade log or position list never compresses the
+  chart; the main chart is a flex child that absorbs the remaining height so both bottom rows always
+  show five rows. This supersedes the fixed-300px note in the IST entry above — the chart height is
+  now adaptive (flexes, with a minimum), not a fixed pixel value.
+- **Trade quantity clears on watchlist selection (§10)** — selecting a ticker blanks the quantity
+  field rather than keeping the previous amount.
+- **`frontend/src/lib/` is force-tracked in git (§4, §11)** — the Python `.gitignore` template's
+  `lib/` rule had been silently excluding the frontend's `src/lib/` (API client, types, formatters)
+  from version control, so a fresh clone could not build the frontend. A `!frontend/src/lib/`
+  negation keeps that source directory tracked.

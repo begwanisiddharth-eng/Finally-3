@@ -37,24 +37,36 @@ this file as components land. Always confirm against the filesystem — this fil
   `PriceCache.seconds_since_update()`.
 - **`backend/db/`** — `schema.sql` for the five tables (§7); init + seeding + all queries in
   `app/db.py` via `aiosqlite`.
-- **API endpoints** — portfolio, watchlist, chat, health (§8), with the `{"error": ...}`
+- **API endpoints** — portfolio, watchlist, chat, health, and reset (§8), with the `{"error": ...}`
   envelope and response shapes from §8. Logic in `app/portfolio.py`, `app/watchlist.py`,
-  `app/chat.py`, `app/routes/`.
+  `app/chat.py`, `app/routes/` (reset in `app/routes/system.py`).
+- **Reset + blank-chat-on-startup** (§7, §8, §10) — `POST /api/reset` (`db.reset_to_defaults`)
+  restores first-launch state (Rs 10 lakh cash, default watchlist, no positions/trades/snapshots/
+  chat), reconciles the live feed to the default watchlist, and takes a fresh snapshot. The lifespan
+  clears `chat_messages` at startup (`db.clear_chat`) so each launch begins blank. Covered by
+  `test_reset_restores_first_launch_state` in `tests/test_api.py`.
 - **LLM integration** — groq-skill via LiteLLM, structured outputs, auto-execution + ordering
   (adds -> trades -> removals), server-side SEBI enforcement, `LLM_MOCK` mode (§9). Validated
   against the real Groq API and in mock mode.
 - **`scripts/`** — `start`/`stop` for macOS/Linux and Windows (§11): .env bootstrap, GROQ check
   (skipped under `LLM_MOCK`), already-running/stale-PID handling, health poll. Idempotent.
-- **Backend + API test suite** — `uv run --extra dev pytest` → 144 passed (125 market +
-  19 API integration via FastAPI TestClient running the lifespan).
+- **Backend + API test suite** — `uv run --extra dev pytest` → 151 passed (market + API
+  integration via FastAPI TestClient running the lifespan, including the reset endpoint).
 - **`db/.gitkeep`** — top-level runtime DB directory placeholder.
 - **Repo scaffolding** — `.github/` CI workflows, `.gitignore`, `.env.example`, both READMEs,
   `backend/pyproject.toml` (+ `uv.lock`), `backend/market_data_demo.py`.
 
 - **`frontend/`** — Next.js 16 static export (App Router, `output:'export'`, TS strict), React 19,
-  Tailwind v4 dark theme, Lightweight Charts v5, self-rendered heatmap, all §10 panels. Built,
-  lint clean, 16 Vitest/RTL unit tests passing, live-verified against the backend. Backend serves
-  `frontend/out/` via its static mount.
+  Tailwind v4 dark theme, Lightweight Charts v5, self-rendered squarified-treemap heatmap, all §10
+  panels. Built, lint clean, Vitest/RTL unit tests passing, live-verified against the backend.
+  Backend serves `frontend/out/` via its static mount. Post-launch UX refinements (all §10/§13):
+  header shows cash/equity/total, a prominent Reset button with an in-app confirm, heatmap fills its
+  panel, Portfolio Value is a 60-minute line, Positions and Recent Trades cap at ~5 rows and scroll,
+  the main chart fills remaining height with an IST HH:MM axis, the trade quantity clears on
+  selection, chat focus returns after a response, and the per-tick price flash was removed.
+- **Repo fix** — `frontend/src/lib/` (API client, types, formatters) had been silently excluded by
+  the Python `.gitignore` template's `lib/` rule; a `!frontend/src/lib/` negation now keeps it
+  tracked so a fresh clone builds (§13).
 - **`test/`** — Playwright E2E (§12), all 7 Key Scenarios passing. A `webServer` fixture launches
   the real app (LLM_MOCK + simulator, per-run temp DB under `test/.e2e/`, port 8200) so it never
   touches the user's `db/finally.db`, `.finally.pid`, or port 8000. Run: `cd test && npm install &&
