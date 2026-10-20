@@ -34,6 +34,7 @@ export default function MainChart({ ticker }: { ticker: string | null }) {
             data={getBuffer(ticker)}
             revision={frame}
             height={300}
+            fill
             area
             color="#209dd7"
           />

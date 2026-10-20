@@ -18,6 +18,20 @@ interface LineChartProps {
   area?: boolean;
   /** Minimal chrome for sparklines (no axes, no grid, no crosshair). */
   minimal?: boolean;
+  /** Fill the parent's height (which must be definite) instead of a fixed px
+   * height, so the time axis is never clipped by a shorter container. */
+  fill?: boolean;
+}
+
+/** Format a chart time (Unix seconds) as IST HH:MM for axis ticks and the crosshair.
+ * Lightweight Charts renders times in UTC by default; this shows them in IST. */
+function formatIST(time: unknown): string {
+  const seconds = typeof time === "number" ? time : 0;
+  return new Date(seconds * 1000).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Kolkata",
+  });
 }
 
 /** Coerce to strictly-ascending, unique-time data (last value wins per second). */
@@ -36,6 +50,7 @@ export default function LineChart({
   color = "#209dd7",
   area = false,
   minimal = false,
+  fill = false,
 }: LineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -64,6 +79,7 @@ export default function LineChart({
           attributionLogo: false,
           fontSize: 11,
         },
+        localization: { timeFormatter: formatIST },
         grid: {
           vertLines: { visible: !minimal, color: "#21262d" },
           horzLines: { visible: !minimal, color: "#21262d" },
@@ -74,6 +90,7 @@ export default function LineChart({
           borderColor: "#2a2f3a",
           timeVisible: true,
           secondsVisible: false,
+          tickMarkFormatter: formatIST,
         },
         crosshair: { mode: minimal ? 0 : 1 },
         handleScroll: !minimal,
@@ -126,5 +143,11 @@ export default function LineChart({
     chart.timeScale().fitContent();
   }, [revision]);
 
-  return <div ref={containerRef} style={{ height }} className="w-full" />;
+  return (
+    <div
+      ref={containerRef}
+      style={fill ? undefined : { height }}
+      className={fill ? "h-full w-full" : "w-full"}
+    />
+  );
 }
