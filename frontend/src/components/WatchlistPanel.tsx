@@ -3,7 +3,6 @@
 import { useState, type FormEvent } from "react";
 import Panel from "./Panel";
 import Sparkline from "./Sparkline";
-import { useFlash } from "@/hooks/useFlash";
 import { api, ApiError } from "@/lib/api";
 import { formatNumber, formatPercent, pnlClass } from "@/lib/format";
 import { useAppData } from "@/providers/AppDataProvider";
@@ -107,10 +106,8 @@ function WatchlistRow({
   onRemove: () => void;
 }) {
   const price = live?.price ?? item.price;
-  const direction = live?.direction ?? item.direction;
   const dayPct = live?.day_change_percent ?? item.day_change_percent;
   const dayChange = live?.day_change ?? item.day_change;
-  const flashCls = useFlash(price, direction ?? null);
 
   return (
     <tr
@@ -120,7 +117,7 @@ function WatchlistRow({
       }`}
     >
       <td className="truncate px-2 py-1.5 font-mono font-medium">{item.ticker}</td>
-      <td className={`px-2 py-1.5 text-right font-mono tabular-nums ${flashCls}`}>
+      <td className="px-2 py-1.5 text-right font-mono tabular-nums">
         {formatNumber(price)}
       </td>
       <td className={`px-2 py-1.5 text-right font-mono tabular-nums ${pnlClass(dayChange)}`}>
