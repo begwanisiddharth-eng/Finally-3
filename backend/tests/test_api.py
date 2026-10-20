@@ -223,3 +223,27 @@ def test_chat_upstream_failure_returns_502_and_persists_nothing(client, monkeypa
     # No chat_messages row is written on an upstream failure (section 8).
     after = len(client.get("/api/chat/history").json())
     assert after == before
+
+
+def test_reset_restores_first_launch_state(client):
+    # Dirty the state: add a ticker, buy a share, send a chat message.
+    client.post("/api/watchlist", json={"ticker": "WIPRO"})
+    client.post("/api/portfolio/trade", json={"ticker": "HDFCBANK", "side": "buy", "quantity": 2})
+    client.post("/api/chat", json={"message": "how is my portfolio"})
+
+    assert client.get("/api/portfolio").json()["positions"]
+    assert client.get("/api/portfolio/trades").json()
+    assert client.get("/api/chat/history").json()
+
+    r = client.post("/api/reset")
+    assert r.status_code == 200
+
+    # Cash restored, no positions, default watchlist, no trades, blank chat.
+    portfolio = client.get("/api/portfolio").json()
+    assert portfolio["cash_balance"] == 1000000.0
+    assert portfolio["positions"] == []
+    assert [t["ticker"] for t in client.get("/api/watchlist").json()["tickers"]] == DEFAULT_WATCHLIST
+    assert client.get("/api/portfolio/trades").json() == []
+    assert client.get("/api/chat/history").json() == []
+    # A fresh snapshot is taken so the P&L chart has a point.
+    assert len(client.get("/api/portfolio/history").json()) >= 1

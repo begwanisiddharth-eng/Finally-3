@@ -71,6 +71,11 @@ class Database:
             "INSERT INTO users_profile (id, cash_balance, created_at) VALUES (?, ?, ?)",
             (DEFAULT_USER, STARTING_CASH, now_iso()),
         )
+        await self._seed_watchlist()
+        await self._conn.commit()
+
+    async def _seed_watchlist(self) -> None:
+        """Insert the default watchlist with strictly increasing added_at."""
         base = datetime.now(timezone.utc)
         for i, ticker in enumerate(SEED_WATCHLIST):
             added_at = (base + timedelta(milliseconds=i)).isoformat()
@@ -78,7 +83,30 @@ class Database:
                 "INSERT INTO watchlist (id, user_id, ticker, added_at) VALUES (?, ?, ?, ?)",
                 (_new_id(), DEFAULT_USER, ticker, added_at),
             )
-        await self._conn.commit()
+
+    async def clear_chat(self) -> None:
+        """Delete all chat messages (called at startup so each run begins blank)."""
+        await self.conn.execute(
+            "DELETE FROM chat_messages WHERE user_id = ?", (DEFAULT_USER,)
+        )
+        await self.conn.commit()
+
+    async def reset_to_defaults(self) -> None:
+        """Restore first-launch state: Rs 10 lakh cash, default watchlist, and no
+        positions, trades, snapshots, or chat (section: Reset feature)."""
+        await self.conn.execute("DELETE FROM positions WHERE user_id = ?", (DEFAULT_USER,))
+        await self.conn.execute("DELETE FROM trades WHERE user_id = ?", (DEFAULT_USER,))
+        await self.conn.execute(
+            "DELETE FROM portfolio_snapshots WHERE user_id = ?", (DEFAULT_USER,)
+        )
+        await self.conn.execute("DELETE FROM chat_messages WHERE user_id = ?", (DEFAULT_USER,))
+        await self.conn.execute("DELETE FROM watchlist WHERE user_id = ?", (DEFAULT_USER,))
+        await self.conn.execute(
+            "UPDATE users_profile SET cash_balance = ? WHERE id = ?",
+            (STARTING_CASH, DEFAULT_USER),
+        )
+        await self._seed_watchlist()
+        await self.conn.commit()
 
     # --- Profile ---
 

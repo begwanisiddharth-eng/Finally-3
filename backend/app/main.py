@@ -26,6 +26,7 @@ from .routes import (  # noqa: E402
     chat_router,
     health_router,
     portfolio_router,
+    system_router,
     watchlist_router,
 )
 
@@ -70,6 +71,8 @@ async def lifespan(app: FastAPI):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db = Database(db_path)
     await db.connect()
+    # Each app start begins with a blank chat (no prior-session history).
+    await db.clear_chat()
 
     # 2. Load watchlist + held tickers.
     watchlist = await db.list_watchlist()
@@ -128,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(watchlist_router)
     app.include_router(chat_router)
     app.include_router(health_router)
+    app.include_router(system_router)
 
     # The SSE router reads the cache from app.state at request time.
     @app.get("/api/stream/prices")
