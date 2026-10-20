@@ -939,3 +939,16 @@ it goes stale; a decision worth keeping belongs in the plan, not behind an exter
   the simulator seeds on `add_ticker`, making the one-turn "add X and buy 10" flow reliable. A
   trade on a tracked-but-still-unpriced ticker is rejected with a clear `400` rather than filling
   at `null`/`0`.
+- **Stale-feed (market-holiday) detection falls back to the simulator (§6)** — the NSE-hours check
+  (§5) is weekday/clock only and does not know holidays, so on a holiday within 9:15–3:30 IST
+  Tapetide stays the desired source but returns *successful* quotes whose `updated_at` is a prior
+  session (frozen, day-old prices) — not an error, so the failure counter never trips.
+  `TapetideDataSource` therefore also counts **consecutive stale poll cycles** (newest `updated_at`
+  across the watchlist older than `TAPETIDE_STALE_SECONDS`, default 300s) and reports
+  `is_degraded()` after N of them (same N=3 as failures). The feed then flows through the **existing**
+  degraded-mode fallback + cooldown latch (no new mechanism): the manager hands over to the
+  simulator (seeded from the last real prices), retries Tapetide once per cooldown, and on a
+  holiday keeps finding it stale and stays on the simulator. The newest-across-the-watchlist
+  timestamp is used so an illiquid single ticker can't trip it during live trading, where at least
+  one liquid name updates within seconds. Chosen over the alternative "same price across N polls"
+  signal: the timestamp is immediate (one cycle), unambiguous, and false-positive-free.

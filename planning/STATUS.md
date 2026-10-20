@@ -19,6 +19,11 @@ this file as components land. Always confirm against the filesystem — this fil
   `TapetideDataSource` counts consecutive poll failures (N=3) and treats a dead poll task as
   degraded; `MarketDataManager` falls back to the simulator and holds a `_force_fallback` /
   `_retry_after` latch (5-min cooldown) so it cannot flap. The supervisor ticks at least every 5s.
+- **Stale-feed (market-holiday) fallback** (§6, §13) — `TapetideDataSource` also counts consecutive
+  *stale* poll cycles (newest `updated_at` across the watchlist older than `TAPETIDE_STALE_SECONDS`,
+  default 300s) and reports `is_degraded()` after N=3, so a holiday's frozen-but-successful feed
+  flows through the same fallback+cooldown path to the simulator. Covered by unit tests in
+  `tests/market/test_degraded.py` (source-level stale/fresh/reset + manager-level fallback).
 - **Tapetide error-handling hardening** (§6, from `MARKET_DATA_REVIEW.md`) — tool calls go through
   `_call_tool`, which inspects `CallToolResult.is_error` (quota/auth/server errors now raise
   `TapetideToolError`/`MarketDataError` instead of reading as empty data), applies a per-call
