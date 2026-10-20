@@ -33,13 +33,13 @@ export default function MainChart({ ticker }: { ticker: string | null }) {
             key={ticker}
             data={getBuffer(ticker)}
             revision={frame}
-            height={380}
+            height={300}
             area
             color="#209dd7"
           />
         </div>
       ) : (
-        <div className="flex h-[380px] items-center justify-center text-sm text-fg-muted">
+        <div className="flex h-[300px] items-center justify-center text-sm text-fg-muted">
           Select a ticker from the watchlist.
         </div>
       )}
