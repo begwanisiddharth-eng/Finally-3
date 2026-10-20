@@ -63,6 +63,23 @@ def test_watchlist_add_valid_invalid_duplicate(client):
     assert "error" in r.json()
 
 
+def test_watchlist_capped_at_20(client):
+    # 10 are seeded; add 10 more valid symbols to reach the cap of 20.
+    extras = ["WIPRO", "SBIN", "AXISBANK", "KOTAKBANK", "LT",
+              "MARUTI", "SUNPHARMA", "TITAN", "ITC", "NTPC"]
+    for sym in extras:
+        assert client.post("/api/watchlist", json={"ticker": sym}).status_code == 200
+    assert len(client.get("/api/watchlist").json()["tickers"]) == 20
+
+    # The 21st new ticker is rejected with the cap message.
+    r = client.post("/api/watchlist", json={"ticker": "ONGC"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "The watchlist can only contain 20 shares"
+
+    # Re-adding an already-watched ticker is still an idempotent success at the cap.
+    assert client.post("/api/watchlist", json={"ticker": "WIPRO"}).status_code == 200
+
+
 def test_watchlist_delete_idempotent(client):
     r = client.delete("/api/watchlist/HDFCBANK")
     assert r.status_code == 200 and r.json()["removed"] is True
