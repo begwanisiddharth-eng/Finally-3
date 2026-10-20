@@ -1,15 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useAppData } from "@/providers/AppDataProvider";
 
 /** Market-order entry: ticker, quantity, buy/sell. Instant fill (section 10). */
 export default function TradeBar({ selected }: { selected: string | null }) {
-  const { refreshAfterTrade } = useAppData();
-  // Follows the selected watchlist ticker until the user types an override.
+  const { watchlist, portfolio, refreshAfterTrade } = useAppData();
+  // Follows the selected watchlist ticker until the user picks an override.
   const [override, setOverride] = useState<string | null>(null);
   const ticker = override ?? selected ?? "";
+
+  // Tradeable symbols = watchlist U held positions (held-but-unwatched included,
+  // so a position off the watchlist can still be sold). Only tracked tickers can
+  // be traded (section 6/8), so this is exactly the valid set.
+  const tradeable = useMemo(() => {
+    const held = (portfolio?.positions ?? []).map((p) => p.ticker);
+    return Array.from(new Set([...watchlist.map((w) => w.ticker), ...held]));
+  }, [watchlist, portfolio]);
   const [qty, setQty] = useState("1");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -38,12 +46,20 @@ export default function TradeBar({ selected }: { selected: string | null }) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-panel px-3 py-2">
       <span className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Trade</span>
-      <input
+      <select
         value={ticker}
         onChange={(e) => setOverride(e.target.value)}
-        placeholder="Ticker"
-        className="w-28 rounded border border-border bg-bg px-2 py-1 text-sm uppercase outline-none focus:border-blue"
-      />
+        className="w-36 rounded border border-border bg-bg px-2 py-1 text-sm outline-none focus:border-blue"
+      >
+        <option value="" disabled>
+          Select symbol
+        </option>
+        {tradeable.map((t) => (
+          <option key={t} value={t}>
+            {t}
+          </option>
+        ))}
+      </select>
       <input
         value={qty}
         onChange={(e) => setQty(e.target.value)}
