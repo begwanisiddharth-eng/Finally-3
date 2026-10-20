@@ -4,7 +4,7 @@ Live status of what is built vs. still to build. This is the single place build 
 PLAN.md §4 stays a stable description of the *target* layout and does not track status. Update
 this file as components land. Always confirm against the filesystem — this file can lag reality.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-20
 
 ## Done
 
@@ -46,9 +46,17 @@ this file as components land. Always confirm against the filesystem — this fil
 - **Repo scaffolding** — `.github/` CI workflows, `.gitignore`, `.env.example`, both READMEs,
   `backend/pyproject.toml` (+ `uv.lock`), `backend/market_data_demo.py`.
 
+- **`frontend/`** — Next.js 16 static export (App Router, `output:'export'`, TS strict), React 19,
+  Tailwind v4 dark theme, Lightweight Charts v5, self-rendered heatmap, all §10 panels. Built,
+  lint clean, 16 Vitest/RTL unit tests passing, live-verified against the backend. Backend serves
+  `frontend/out/` via its static mount.
+- **`test/`** — Playwright E2E (§12), all 7 Key Scenarios passing. A `webServer` fixture launches
+  the real app (LLM_MOCK + simulator, per-run temp DB under `test/.e2e/`, port 8200) so it never
+  touches the user's `db/finally.db`, `.finally.pid`, or port 8000. Run: `cd test && npm install &&
+  npx playwright install chromium && npm test`.
+
 ## To build
 
-- **`frontend/`** — Next.js static export (App Router, `output:'export'`, TS strict), Tailwind
-  dark theme, Lightweight Charts, self-rendered heatmap, all §10 panels. Not yet started; the
-  backend serves the API only until this lands.
-- **`test/`** — Playwright E2E with the isolation env from §12 (depends on the frontend).
+- Nothing outstanding — the platform is feature-complete per PLAN.md. Remaining items are optional
+  polish only (e.g. the optional `data-testid` hooks on the two trade-bar inputs the Integration
+  Tester noted).
