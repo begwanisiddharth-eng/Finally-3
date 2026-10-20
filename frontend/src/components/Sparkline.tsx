@@ -8,7 +8,7 @@ export default function Sparkline({ ticker, up }: { ticker: string; up: boolean 
   const { getBuffer, frame } = usePrices();
   const data = getBuffer(ticker);
   return (
-    <div className="w-28">
+    <div className="w-full">
       <LineChart
         data={data}
         revision={frame}

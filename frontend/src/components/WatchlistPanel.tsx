@@ -66,14 +66,14 @@ export default function WatchlistPanel({ selected, onSelect }: WatchlistPanelPro
         </button>
       </form>
       {error && <div className="bg-down/15 px-3 py-1.5 text-xs text-down">{error}</div>}
-      <table className="w-full text-sm">
+      <table className="w-full table-fixed text-sm">
         <thead className="text-left text-[11px] uppercase text-fg-muted">
           <tr className="border-b border-border-soft">
-            <th className="px-3 py-1.5 font-medium">Ticker</th>
-            <th className="px-3 py-1.5 text-right font-medium">Price</th>
-            <th className="px-3 py-1.5 text-right font-medium">Day %</th>
-            <th className="px-3 py-1.5 text-right font-medium">Trend</th>
-            <th className="px-2 py-1.5"></th>
+            <th className="w-[34%] px-2 py-1.5 font-medium">Ticker</th>
+            <th className="w-[23%] px-2 py-1.5 text-right font-medium">Price</th>
+            <th className="w-[19%] px-2 py-1.5 text-right font-medium">Day %</th>
+            <th className="w-[15%] px-1 py-1.5 text-right font-medium">Trend</th>
+            <th className="w-[9%] px-1 py-1.5"></th>
           </tr>
         </thead>
         <tbody>
@@ -119,19 +119,19 @@ function WatchlistRow({
         selected ? "bg-panel-alt" : ""
       }`}
     >
-      <td className="px-3 py-1.5 font-mono font-medium">{item.ticker}</td>
-      <td className={`px-3 py-1.5 text-right font-mono tabular-nums ${flashCls}`}>
+      <td className="truncate px-2 py-1.5 font-mono font-medium">{item.ticker}</td>
+      <td className={`px-2 py-1.5 text-right font-mono tabular-nums ${flashCls}`}>
         {formatNumber(price)}
       </td>
-      <td className={`px-3 py-1.5 text-right font-mono tabular-nums ${pnlClass(dayChange)}`}>
+      <td className={`px-2 py-1.5 text-right font-mono tabular-nums ${pnlClass(dayChange)}`}>
         {formatPercent(dayPct)}
       </td>
-      <td className="px-3 py-1">
+      <td className="px-1 py-1">
         <div className="flex justify-end">
           <Sparkline ticker={item.ticker} up={(dayChange ?? 0) >= 0} />
         </div>
       </td>
-      <td className="px-2 py-1 text-right">
+      <td className="px-1 py-1 text-right">
         <button
           onClick={(e) => {
             e.stopPropagation();

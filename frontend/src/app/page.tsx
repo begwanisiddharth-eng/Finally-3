@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ChatPanel from "@/components/ChatPanel";
 import Header from "@/components/Header";
 import Heatmap from "@/components/Heatmap";
@@ -10,7 +10,7 @@ import PositionsTable from "@/components/PositionsTable";
 import RecentTrades from "@/components/RecentTrades";
 import TradeBar from "@/components/TradeBar";
 import WatchlistPanel from "@/components/WatchlistPanel";
-import { AppDataProvider } from "@/providers/AppDataProvider";
+import { AppDataProvider, useAppData } from "@/providers/AppDataProvider";
 import { PricesProvider } from "@/providers/PricesProvider";
 
 export default function Home() {
@@ -24,7 +24,17 @@ export default function Home() {
 }
 
 function Dashboard() {
+  const { watchlist } = useAppData();
   const [selected, setSelected] = useState<string | null>(null);
+
+  // Auto-select the first watchlist ticker on load so the chart isn't blank.
+  // Only fills an empty selection; a manual pick is never overridden.
+  useEffect(() => {
+    if (selected == null && watchlist.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelected(watchlist[0].ticker);
+    }
+  }, [selected, watchlist]);
 
   return (
     <div className="flex h-full flex-col">
