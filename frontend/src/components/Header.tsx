@@ -14,15 +14,18 @@ export default function Header() {
   const { portfolio, health } = useAppData();
   const { prices, connection } = usePrices();
 
-  // Live total: cash + positions valued at the latest streamed prices.
-  const liveTotal =
+  // Live equity: held positions valued at the latest streamed prices.
+  const liveEquity =
     portfolio == null
       ? null
-      : portfolio.cash_balance +
-        portfolio.positions.reduce((sum, p) => {
+      : portfolio.positions.reduce((sum, p) => {
           const price = prices[p.ticker]?.price ?? p.current_price ?? p.avg_cost;
           return sum + p.quantity * price;
         }, 0);
+
+  // Live total: cash + equity.
+  const liveTotal =
+    portfolio == null || liveEquity == null ? null : portfolio.cash_balance + liveEquity;
 
   const isLive = health?.data_source === "tapetide";
   const healthy = health?.market_data_healthy ?? false;
@@ -55,6 +58,10 @@ export default function Header() {
         <div className="text-right">
           <div className="text-[11px] uppercase text-fg-muted">Cash</div>
           <div className="font-mono tabular-nums">{formatMoney(portfolio?.cash_balance)}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-[11px] uppercase text-fg-muted">Equity</div>
+          <div className="font-mono tabular-nums">{formatMoney(liveEquity)}</div>
         </div>
         <div className="text-right">
           <div className="text-[11px] uppercase text-fg-muted">Total Value</div>
