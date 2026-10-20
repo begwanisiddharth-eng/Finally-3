@@ -13,6 +13,8 @@ export default function ChatPanel() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wasPending = useRef(false);
 
   useEffect(() => {
     api.getChatHistory().then(setMessages).catch(() => {});
@@ -21,6 +23,12 @@ export default function ChatPanel() {
   useEffect(() => {
     scrollRef.current?.scrollTo?.(0, scrollRef.current.scrollHeight);
   }, [messages, pending]);
+
+  // Return focus to the input once a response completes (input was re-enabled).
+  useEffect(() => {
+    if (wasPending.current && !pending) inputRef.current?.focus();
+    wasPending.current = pending;
+  }, [pending]);
 
   const send = async (e: FormEvent) => {
     e.preventDefault();
@@ -65,6 +73,7 @@ export default function ChatPanel() {
         </div>
         <form onSubmit={send} className="flex gap-2 border-t border-border-soft p-2">
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={pending}
