@@ -83,7 +83,7 @@ export default function Header() {
 
         <button
           onClick={() => setConfirming(true)}
-          className="rounded border border-border px-3 py-1 text-xs font-semibold uppercase tracking-wider text-fg-muted hover:border-down hover:text-down"
+          className="rounded-md border border-down bg-down/15 px-4 py-1.5 text-sm font-bold uppercase tracking-wider text-down hover:bg-down hover:text-black"
         >
           Reset
         </button>

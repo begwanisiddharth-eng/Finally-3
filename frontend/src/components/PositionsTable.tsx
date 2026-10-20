@@ -13,7 +13,7 @@ export default function PositionsTable() {
       {positions.length === 0 ? (
         <div className="p-3 text-sm text-fg-muted">No open positions.</div>
       ) : (
-        <div className="max-h-[188px] overflow-y-auto">
+        <div className="max-h-[200px] overflow-y-auto">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-panel text-left text-[11px] uppercase text-fg-muted">
             <tr className="border-b border-border-soft">

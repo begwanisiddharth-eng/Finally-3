@@ -54,11 +54,11 @@ function Dashboard() {
 
           <div className="flex min-h-0 flex-col gap-3 overflow-auto lg:h-full">
             <MainChart ticker={selected} />
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid shrink-0 gap-3 md:grid-cols-2">
               <PnlChart />
               <Heatmap />
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid shrink-0 gap-3 md:grid-cols-2">
               <PositionsTable />
               <RecentTrades />
             </div>

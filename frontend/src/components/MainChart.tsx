@@ -17,7 +17,7 @@ export default function MainChart({ ticker }: { ticker: string | null }) {
   return (
     <Panel
       title={title}
-      className="shrink-0"
+      className="min-h-[200px] flex-1"
       action={
         ticker && (
           <span className="font-mono text-sm">
@@ -28,18 +28,19 @@ export default function MainChart({ ticker }: { ticker: string | null }) {
       }
     >
       {ticker ? (
-        <div className="p-2">
+        <div className="h-full min-h-0 p-2">
           <LineChart
             key={ticker}
             data={getBuffer(ticker)}
             revision={frame}
             height={300}
+            fill
             area
             color="#209dd7"
           />
         </div>
       ) : (
-        <div className="flex h-[300px] items-center justify-center text-sm text-fg-muted">
+        <div className="flex h-full min-h-[200px] items-center justify-center text-sm text-fg-muted">
           Select a ticker from the watchlist.
         </div>
       )}
