@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ def _failing_source(max_failures: int = 3) -> TapetideDataSource:
     return source
 
 
-def _ok_client() -> MagicMock:
+def _client_with_updated_at(updated_at: str) -> MagicMock:
     client = MagicMock()
     result = MagicMock()
     result.is_error = False  # unset MagicMock attr is truthy -> would read as a tool error
@@ -33,13 +34,28 @@ def _ok_client() -> MagicMock:
                 "symbol": "RELIANCE",
                 "price": 1.0,
                 "prev_close": 1.0,
-                "updated_at": "2026-10-16T10:00:00+00:00",
+                "updated_at": updated_at,
                 "found": True,
             }
         ]
     }
     client.call_tool = AsyncMock(return_value=result)
     return client
+
+
+def _ok_client() -> MagicMock:
+    # A prior-session timestamp: a valid, successful quote (not an error).
+    return _client_with_updated_at("2026-10-16T10:00:00+00:00")
+
+
+def _stale_client() -> MagicMock:
+    """Successful quote whose updated_at is a past session (frozen holiday feed)."""
+    return _client_with_updated_at("2026-10-16T10:00:00+00:00")
+
+
+def _fresh_client() -> MagicMock:
+    """Successful quote whose updated_at is now (a live trading session)."""
+    return _client_with_updated_at(datetime.now(timezone.utc).isoformat())
 
 
 @pytest.mark.asyncio
@@ -88,6 +104,39 @@ class TestTapetideDegradedMode:
 
     async def test_simulator_is_never_degraded(self):
         assert not SimulatorDataSource(price_cache=PriceCache()).is_degraded()
+
+    async def test_degraded_after_n_consecutive_stale_polls(self):
+        source = TapetideDataSource(api_key="test-key", price_cache=PriceCache())
+        source._tickers = ["RELIANCE"]
+        source._client = _stale_client()
+        for _ in range(2):
+            await source._poll_once()
+        assert not source.is_degraded()
+        await source._poll_once()
+        assert source.is_degraded()
+
+    async def test_fresh_feed_is_never_stale_degraded(self):
+        source = TapetideDataSource(api_key="test-key", price_cache=PriceCache())
+        source._tickers = ["RELIANCE"]
+        source._client = _fresh_client()
+        for _ in range(5):
+            await source._poll_once()
+        assert not source.is_degraded()
+        assert source._consecutive_stale == 0
+
+    async def test_fresh_poll_resets_stale_streak(self):
+        source = TapetideDataSource(api_key="test-key", price_cache=PriceCache())
+        source._tickers = ["RELIANCE"]
+        source._client = _stale_client()
+        await source._poll_once()
+        await source._poll_once()
+        source._client = _fresh_client()
+        await source._poll_once()
+        assert source._consecutive_stale == 0
+        source._client = _stale_client()
+        await source._poll_once()
+        await source._poll_once()
+        assert not source.is_degraded()
 
 
 class _Clock:
@@ -157,6 +206,15 @@ class TestDegradedFallback:
         assert isinstance(manager._active, SimulatorDataSource)
         assert manager._force_fallback
         assert manager._retry_after == clock.now + 300
+        await manager.stop()
+
+    async def test_stale_tapetide_falls_back_to_simulator(self):
+        manager = _tapetide_manager(_Clock())
+        manager._active._consecutive_stale = 3
+        await _handover(manager)
+        assert isinstance(manager._active, SimulatorDataSource)
+        assert set(manager.get_tickers()) == {"RELIANCE", "TCS"}
+        assert manager._force_fallback
         await manager.stop()
 
     async def test_healthy_tapetide_is_not_replaced(self):

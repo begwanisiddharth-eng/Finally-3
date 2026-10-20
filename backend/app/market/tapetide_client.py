@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -27,6 +28,11 @@ TAPETIDE_MCP_URL = "https://mcp.tapetide.com/mcp"
 DEFAULT_MAX_FAILURES = 3  # consecutive failures before the source reports degraded
 BATCH_SIZE = 20  # get_batch_quotes accepts at most 20 symbols per call
 TAPETIDE_CALL_TIMEOUT = 10.0  # hard cap per tool call (seconds), so a hang becomes a failure
+# Feed is "not live" if the newest quote in a cycle is older than this. During
+# trading hours at least one liquid ticker updates within seconds, so the newest
+# timestamp across the watchlist is always fresh; on a holiday/weekend every
+# quote carries a prior session's updated_at, which is hours-to-days old.
+TAPETIDE_STALE_SECONDS = 300.0
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -84,11 +90,19 @@ class TapetideDataSource(MarketDataSource):
         # poll task (which stops producing per-batch failures altogether).
         self._max_failures = max_failures
         self._consecutive_failures = 0
+        # Consecutive poll cycles whose newest quote was stale (frozen holiday
+        # feed). Separate from failures because a stale quote is a *successful*
+        # call, so the failure counter never trips on it (§6).
+        self._consecutive_stale = 0
         self._stopped = False
 
     def is_degraded(self) -> bool:
-        """True after N consecutive poll failures, or if the poll task died."""
+        """Degraded after N consecutive poll failures, N consecutive stale poll
+        cycles (a frozen feed on a market holiday — successful quotes whose
+        updated_at is from a past session, §6), or if the poll task died."""
         if self._consecutive_failures >= self._max_failures:
+            return True
+        if self._consecutive_stale >= self._max_failures:
             return True
         return self._task is not None and self._task.done() and not self._stopped
 
@@ -96,6 +110,7 @@ class TapetideDataSource(MarketDataSource):
         self._tickers = list(tickers)
         self._stopped = False
         self._consecutive_failures = 0
+        self._consecutive_stale = 0
         self._task = asyncio.create_task(self._run(), name="tapetide-poller")
         logger.info(
             "Tapetide poller started: %d tickers, %.1fs interval",
@@ -182,6 +197,8 @@ class TapetideDataSource(MarketDataSource):
             return
 
         poll_failed = False
+        newest_ts: float | None = None
+        wrote_any = False
         for i in range(0, len(tickers), BATCH_SIZE):
             batch = tickers[i : i + BATCH_SIZE]
             try:
@@ -194,12 +211,26 @@ class TapetideDataSource(MarketDataSource):
             for quote in quotes:
                 # A ticker removed mid-poll must not be written back into the
                 # cache (would leave a ghost row in the SSE frame).
-                if quote.get("requested", "").upper() in self._tickers:
-                    self._cache_quote(quote)
+                if quote.get("requested", "").upper() in self._tickers and self._cache_quote(quote):
+                    wrote_any = True
+                    ts = self._quote_timestamp(quote)
+                    if ts is not None and (newest_ts is None or ts > newest_ts):
+                        newest_ts = ts
 
         # One failure per poll cycle, however many batches failed; a fully
         # successful cycle resets the streak.
         self._consecutive_failures = self._consecutive_failures + 1 if poll_failed else 0
+
+        # Stale-feed detection (§6): on a market holiday Tapetide returns
+        # successful quotes (not errors) whose updated_at is from a past
+        # session, so the failure counter never trips. Count a cycle whose
+        # newest quote is older than the threshold as stale; N consecutive stale
+        # cycles mark the source degraded and the manager hands over to the
+        # simulator. A cycle with a fresh quote resets the streak.
+        if wrote_any and newest_ts is not None and time.time() - newest_ts > TAPETIDE_STALE_SECONDS:
+            self._consecutive_stale += 1
+        else:
+            self._consecutive_stale = 0
 
     def _cache_quote(self, quote: dict) -> bool:
         """Parse one get_batch_quotes entry and write it to the cache.
@@ -225,6 +256,13 @@ class TapetideDataSource(MarketDataSource):
         except (KeyError, TypeError, ValueError) as e:
             logger.warning("Skipping malformed quote for %s: %s", ticker, e)
             return False
+
+    def _quote_timestamp(self, quote: dict) -> float | None:
+        """Parsed updated_at (Unix seconds) for a quote, or None if unparseable."""
+        try:
+            return _parse_timestamp(quote["updated_at"])
+        except (KeyError, TypeError, ValueError):
+            return None
 
     async def _call_tool(self, name: str, arguments: dict) -> dict:
         """One serialized, time-bounded tool call. Returns structured_content (or {}).
