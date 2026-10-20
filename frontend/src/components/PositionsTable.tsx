@@ -13,8 +13,9 @@ export default function PositionsTable() {
       {positions.length === 0 ? (
         <div className="p-3 text-sm text-fg-muted">No open positions.</div>
       ) : (
+        <div className="max-h-[188px] overflow-y-auto">
         <table className="w-full text-sm">
-          <thead className="text-left text-[11px] uppercase text-fg-muted">
+          <thead className="sticky top-0 bg-panel text-left text-[11px] uppercase text-fg-muted">
             <tr className="border-b border-border-soft">
               <th className="px-3 py-1.5 font-medium">Ticker</th>
               <th className="px-3 py-1.5 text-right font-medium">Qty</th>
@@ -26,7 +27,7 @@ export default function PositionsTable() {
           </thead>
           <tbody>
             {positions.map((p) => (
-              <tr key={p.ticker} className="border-b border-border-soft/60 font-mono tabular-nums">
+              <tr key={p.ticker} className="whitespace-nowrap border-b border-border-soft/60 font-mono tabular-nums">
                 <td className="px-3 py-1.5 font-medium">{p.ticker}</td>
                 <td className="px-3 py-1.5 text-right">{formatQty(p.quantity)}</td>
                 <td className="px-3 py-1.5 text-right">{formatNumber(p.avg_cost)}</td>
@@ -41,6 +42,7 @@ export default function PositionsTable() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </Panel>
   );

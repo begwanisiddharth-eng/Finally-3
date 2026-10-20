@@ -12,7 +12,7 @@ export default function RecentTrades() {
       {trades.length === 0 ? (
         <div className="p-3 text-sm text-fg-muted">No trades yet.</div>
       ) : (
-        <ul className="divide-y divide-border-soft/60 text-sm">
+        <ul className="max-h-[160px] divide-y divide-border-soft/60 overflow-y-auto text-sm">
           {trades.map((t) => (
             <li key={t.id} className="flex items-center justify-between px-3 py-1.5 font-mono">
               <span
