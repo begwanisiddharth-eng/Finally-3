@@ -27,12 +27,15 @@ function Dashboard() {
   const { watchlist } = useAppData();
   const [selected, setSelected] = useState<string | null>(null);
 
-  // Auto-select the first watchlist ticker on load so the chart isn't blank.
-  // Only fills an empty selection; a manual pick is never overridden.
+  // Keep the chart on a watchlist ticker: auto-select the first one on load,
+  // and when the selected ticker is removed from the watchlist, fall back to
+  // the first remaining one (or nothing if the list is now empty). A selection
+  // that is still on the watchlist is never overridden.
   useEffect(() => {
-    if (selected == null && watchlist.length > 0) {
+    const stillWatched = watchlist.some((w) => w.ticker === selected);
+    if (!stillWatched) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSelected(watchlist[0].ticker);
+      setSelected(watchlist.length > 0 ? watchlist[0].ticker : null);
     }
   }, [selected, watchlist]);
 
