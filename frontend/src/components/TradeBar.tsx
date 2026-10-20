@@ -9,7 +9,6 @@ export default function TradeBar({ selected }: { selected: string | null }) {
   const { watchlist, portfolio, refreshAfterTrade } = useAppData();
   // Follows the selected watchlist ticker until the user picks an override.
   const [override, setOverride] = useState<string | null>(null);
-  const ticker = override ?? selected ?? "";
 
   // Tradeable symbols = watchlist U held positions (held-but-unwatched included,
   // so a position off the watchlist can still be sold). Only tracked tickers can
@@ -18,6 +17,10 @@ export default function TradeBar({ selected }: { selected: string | null }) {
     const held = (portfolio?.positions ?? []).map((p) => p.ticker);
     return Array.from(new Set([...watchlist.map((w) => w.ticker), ...held]));
   }, [watchlist, portfolio]);
+
+  // Ignore a stale override (e.g. a ticker removed by a reset) and fall back to
+  // the current selection.
+  const ticker = (override && tradeable.includes(override) ? override : selected) ?? "";
   const [qty, setQty] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);

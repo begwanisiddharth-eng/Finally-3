@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { formatMoney } from "@/lib/format";
 import { useAppData } from "@/providers/AppDataProvider";
 import { usePrices, type ConnectionState } from "@/providers/PricesProvider";
@@ -11,8 +12,20 @@ const DOT: Record<ConnectionState, string> = {
 };
 
 export default function Header() {
-  const { portfolio, health } = useAppData();
+  const { portfolio, health, resetAll } = useAppData();
   const { prices, connection } = usePrices();
+  const [confirming, setConfirming] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const doReset = async () => {
+    setResetting(true);
+    try {
+      await resetAll();
+      setConfirming(false);
+    } finally {
+      setResetting(false);
+    }
+  };
 
   // Live equity: held positions valued at the latest streamed prices.
   const liveEquity =
@@ -67,8 +80,57 @@ export default function Header() {
           <div className="text-[11px] uppercase text-fg-muted">Total Value</div>
           <div className="font-mono tabular-nums text-accent">{formatMoney(liveTotal)}</div>
         </div>
+
+        <button
+          onClick={() => setConfirming(true)}
+          className="rounded border border-border px-3 py-1 text-xs font-semibold uppercase tracking-wider text-fg-muted hover:border-down hover:text-down"
+        >
+          Reset
+        </button>
       </div>
+
+      {confirming && (
+        <ResetDialog busy={resetting} onCancel={() => setConfirming(false)} onConfirm={doReset} />
+      )}
     </header>
+  );
+}
+
+function ResetDialog({
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-lg border border-border bg-panel p-5 shadow-xl">
+        <h3 className="text-base font-semibold">Reset portfolio?</h3>
+        <p className="mt-2 text-sm text-fg-muted">
+          This resets cash to Rs 10,00,000, clears all positions and trades, restores the default
+          watchlist, and empties the chat — exactly like a first launch. This cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded border border-border px-4 py-1.5 text-sm text-fg hover:bg-panel-alt disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded bg-down px-4 py-1.5 text-sm font-semibold text-black disabled:opacity-50"
+          >
+            {busy ? "Resetting…" : "Reset"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

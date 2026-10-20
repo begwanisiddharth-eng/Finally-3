@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "@/lib/api";
+import { usePrices } from "@/providers/PricesProvider";
 import type { Health, Portfolio, Snapshot, Trade, WatchlistItem } from "@/lib/types";
 
 interface AppDataValue {
@@ -23,6 +24,10 @@ interface AppDataValue {
   refreshHistory: () => Promise<void>;
   /** After a trade or an AI action: portfolio, watchlist, trades, history all move. */
   refreshAfterTrade: () => Promise<void>;
+  /** Reset to first-launch state (clears server state + chart buffers). */
+  resetAll: () => Promise<void>;
+  /** Bumps on each reset so dependent panels (e.g. chat) can clear themselves. */
+  resetNonce: number;
 }
 
 const AppDataContext = createContext<AppDataValue | null>(null);
@@ -33,6 +38,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
+  const [resetNonce, setResetNonce] = useState(0);
+  const { clearBuffers } = usePrices();
 
   const refreshWatchlist = useCallback(async () => setWatchlist(await api.getWatchlist()), []);
   const refreshPortfolio = useCallback(async () => setPortfolio(await api.getPortfolio()), []);
@@ -42,6 +49,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const refreshAfterTrade = useCallback(async () => {
     await Promise.all([refreshPortfolio(), refreshWatchlist(), refreshTrades(), refreshHistory()]);
   }, [refreshPortfolio, refreshWatchlist, refreshTrades, refreshHistory]);
+
+  const resetAll = useCallback(async () => {
+    await api.reset();
+    clearBuffers();
+    await refreshAfterTrade();
+    setResetNonce((n) => n + 1);
+  }, [clearBuffers, refreshAfterTrade]);
 
   // Initial load — fetching from the backend on mount is the intended source
   // of this state (a static SPA has no server-side data loader).
@@ -81,6 +95,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     refreshTrades,
     refreshHistory,
     refreshAfterTrade,
+    resetAll,
+    resetNonce,
   };
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;

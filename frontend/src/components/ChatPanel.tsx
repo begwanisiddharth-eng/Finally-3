@@ -7,7 +7,7 @@ import { useAppData } from "@/providers/AppDataProvider";
 import type { ChatAction, ChatMessage } from "@/lib/types";
 
 export default function ChatPanel() {
-  const { refreshAfterTrade } = useAppData();
+  const { refreshAfterTrade, resetNonce } = useAppData();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
@@ -19,6 +19,14 @@ export default function ChatPanel() {
   useEffect(() => {
     api.getChatHistory().then(setMessages).catch(() => {});
   }, []);
+
+  // Clear the conversation when the app is reset (chat is wiped server-side too).
+  useEffect(() => {
+    if (resetNonce > 0) {
+      setMessages([]);
+      setError("");
+    }
+  }, [resetNonce]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo?.(0, scrollRef.current.scrollHeight);

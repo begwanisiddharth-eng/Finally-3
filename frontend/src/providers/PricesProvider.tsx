@@ -27,6 +27,8 @@ interface PricesContextValue {
   getBuffer: (ticker: string) => LinePoint[];
   /** Bumps on every SSE frame so chart effects can refresh from the buffer. */
   frame: number;
+  /** Drop all accumulated chart history (used by Reset to start charts fresh). */
+  clearBuffers: () => void;
 }
 
 const PricesContext = createContext<PricesContextValue | null>(null);
@@ -60,6 +62,10 @@ export function PricesProvider({ children }: { children: ReactNode }) {
     connection,
     frame,
     getBuffer: (ticker) => buffers.current.get(ticker) ?? [],
+    clearBuffers: () => {
+      buffers.current.clear();
+      setFrame((f) => f + 1);
+    },
   };
 
   return <PricesContext.Provider value={value}>{children}</PricesContext.Provider>;
